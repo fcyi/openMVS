@@ -14,6 +14,9 @@ IF(POLICY CMP0104)
 	CMAKE_POLICY(SET CMP0104 NEW)
 ENDIF()
 
+# 避免与anaconda3中的库冲突
+SET(CMAKE_PREFIX_PATH "/usr/lib/x86_64-linux-gnu/cmake")
+
 # List configuration options
 SET(OpenMVS_BUILD_TOOLS ON CACHE BOOL "Build example applications")
 SET(OpenMVS_USE_OPENMP ON CACHE BOOL "Enable OpenMP library")

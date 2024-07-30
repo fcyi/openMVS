@@ -1,0 +1,129 @@
+稠密重建：
+./bin/DensifyPointCloud -w /home/hqd/workspace/3dRecon/MVS/data -i scene.mvs -o test_dense.mvs
+
+2.网格重建：
+./bin/ReconstructMesh -w /home/hqd/workspace/3dRecon/MVS/data -i test_dense.mvs -o test_mesh.mvs
+
+
+关于网格重建以及网格优化没有mvs文件的问题可以参考：
+https://github.com/cdcseacave/openMVS/issues/1142
+https://github.com/cdcseacave/openMVS/issues/1058
+https://github.com/cdcseacave/openMVS/issues/1159
+
+
+3.网格优化：
+老版本（计算机视觉life）：./bin/RefineMesh -w /home/hqd/workspace/3dRecon/MVS/data -i test_dense.mvs -o test_refinemesh.mvs
+用在新版本可能会出现的错误：
+11:04:50 [App     ] OpenMVS x64 v2.3.0
+11:04:50 [App     ] Build date: Jul 27 2024, 09:15:31
+11:04:50 [App     ] CPU: AMD Ryzen 9 7945HX with Radeon Graphics         (32 cores)
+11:04:50 [App     ] RAM: 14.79GB Physical Memory 8.00GB Virtual Memory
+11:04:50 [App     ] OS: Linux 6.5.0-35-generic (x86_64)
+11:04:50 [App     ] Disk: 382.40GB (494.78GB) space
+11:04:50 [App     ] SSE & AVX compatible CPU & OS detected
+11:04:50 [App     ] Command line: RefineMesh -w /home/hqd/workspace/3dRecon/MVS/data -i test_dense.mvs -o test_refinemesh.mvs
+11:04:50 [App     ] Camera model loaded: platform 0; camera  0; f 1.054x1.054; poses 11
+11:04:50 [App     ] Scene loaded from interface format (5ms):
+	11 images (11 calibrated) with a total of 15.81 MPixels (1.44 MPixels/image)
+	12683 points, 0 vertices, 0 faces
+11:04:50 [App     ] error: invalid mesh file
+11:04:50 [App     ] error: cannot load mesh file
+11:04:50 [App     ] MEMORYINFO: {
+11:04:50 [App     ] 	VmPeak:	  242032 kB
+11:04:50 [App     ] 	VmSize:	  228204 kB
+11:04:50 [App     ] } ENDINFO
+
+
+新版本（2024年07月27日使用）：./bin/RefineMesh -w /home/hqd/workspace/3dRecon/MVS/data test_dense.mvs -m test_mesh.ply -o test_refinemesh.mvs
+可能会出现的错误：
+09:54:34 [App     ] OpenMVS x64 v2.3.0
+09:54:34 [App     ] Build date: Jul 27 2024, 09:15:31
+09:54:34 [App     ] CPU: AMD Ryzen 9 7945HX with Radeon Graphics         (32 cores)
+09:54:34 [App     ] RAM: 14.79GB Physical Memory 0B Virtual Memory
+09:54:34 [App     ] OS: Linux 6.5.0-35-generic (x86_64)
+09:54:34 [App     ] Disk: 382.45GB (494.78GB) space
+09:54:34 [App     ] SSE & AVX compatible CPU & OS detected
+09:54:34 [App     ] Command line: RefineMesh -w /home/hqd/workspace/3dRecon/MVS/data scene.mvs -m test_mesh.ply -o test_refinemesh.mvs
+09:54:34 [App     ] Camera model loaded: platform 0; camera  0; f 1.054x1.054; poses 11
+09:54:34 [App     ] Scene loaded from interface format (7ms):
+	11 images (11 calibrated) with a total of 63.22 MPixels (5.75 MPixels/image)
+	12683 points, 0 vertices, 0 faces
+09:54:34 [App     ] Mesh loaded: 474430 vertices, 948347 faces (74ms)
+09:54:40 [App     ] Cleaned mesh: 178070 vertices, 355627 faces (5s882ms)
+09:54:41 [App     ] Cleaned mesh: 178069 vertices, 355627 faces (448ms)
+09:54:55 [App     ] Cleaned mesh: 154741 vertices, 308315 faces (353ms)
+09:54:55 [App     ] Mesh subdivided: 178069/355627 -> 154741/308315 vertices/faces
+09:54:57 [App     ] 	 1. f: 17.83766 (1.1527e-04)	g: 0.47280 (3.0554e-06 - 3.8650e-04)	s: 0.500	v:     0
+09:54:59 [App     ] 	 2. f: 17.68372 (1.1428e-04)	g: 0.21958 (1.4190e-06 - 3.0600e-04)	s: 0.490	v:     0
+09:55:00 [App     ] 	 3. f: 17.51481 (1.1319e-04)	g: 0.19226 (1.2425e-06 - 2.6990e-04)	s: 0.480	v:     0
+09:55:02 [App     ] 	 4. f: 17.40267 (1.1246e-04)	g: 0.16784 (1.0846e-06 - 2.4296e-04)	s: 0.471	v:     0
+09:55:03 [App     ] 	 5. f: 17.31613 (1.1190e-04)	g: 0.16884 (1.0911e-06 - 2.2273e-04)	s: 0.461	v:     0
+09:55:05 [App     ] 	 6. f: 17.25282 (1.1149e-04)	g: 0.14340 (9.2670e-07 - 2.0539e-04)	s: 0.452	v:     0
+09:55:06 [App     ] 	 7. f: 17.19738 (1.1114e-04)	g: 0.14725 (9.5159e-07 - 1.9333e-04)	s: 0.443	v:     0
+09:55:08 [App     ] 	 8. f: 17.15986 (1.1089e-04)	g: 0.13032 (8.4215e-07 - 1.8124e-04)	s: 0.434	v:     0
+09:55:09 [App     ] 	 9. f: 17.11877 (1.1063e-04)	g: 0.12393 (8.0088e-07 - 1.7139e-04)	s: 0.425	v:     0
+09:55:11 [App     ] 	10. f: 17.08727 (1.1042e-04)	g: 0.13026 (8.4182e-07 - 1.6431e-04)	s: 0.417	v:     0
+09:55:12 [App     ] 	11. f: 17.06378 (1.1027e-04)	g: 0.12616 (8.1533e-07 - 1.5713e-04)	s: 0.409	v:     0
+09:55:14 [App     ] 	12. f: 17.04746 (1.1017e-04)	g: 0.12473 (8.0604e-07 - 1.5095e-04)	s: 0.400	v:     0
+09:55:15 [App     ] 	13. f: 17.02708 (1.1004e-04)	g: 0.11720 (7.5741e-07 - 1.4489e-04)	s: 0.392	v:     0
+09:55:17 [App     ] 	14. f: 16.99930 (1.0986e-04)	g: 0.10905 (7.0470e-07 - 1.3967e-04)	s: 0.385	v:     0
+09:55:18 [App     ] 	15. f: 16.98216 (1.0975e-04)	g: 0.10684 (6.9046e-07 - 1.3509e-04)	s: 0.377	v:     0
+09:55:20 [App     ] 	16. f: 16.96627 (1.0964e-04)	g: 0.11363 (7.3432e-07 - 1.3112e-04)	s: 0.369	v:     0
+09:55:21 [App     ] 	17. f: 16.95028 (1.0954e-04)	g: 0.10965 (7.0862e-07 - 1.2696e-04)	s: 0.362	v:     0
+09:55:23 [App     ] 	18. f: 16.93474 (1.0944e-04)	g: 0.11483 (7.4210e-07 - 1.2423e-04)	s: 0.355	v:     0
+09:55:25 [App     ] 	19. f: 16.92966 (1.0941e-04)	g: 0.11222 (7.2523e-07 - 1.2118e-04)	s: 0.348	v:     0
+09:55:26 [App     ] 	20. f: 16.91421 (1.0931e-04)	g: 0.10462 (6.7609e-07 - 1.1850e-04)	s: 0.341	v:     0
+09:55:28 [App     ] 	21. f: 16.90342 (1.0924e-04)	g: 0.10123 (6.5420e-07 - 1.1539e-04)	s: 0.334	v:     0
+09:55:29 [App     ] 	22. f: 16.89343 (1.0917e-04)	g: 0.11526 (7.4486e-07 - 1.1377e-04)	s: 0.327	v:     0
+09:55:31 [App     ] 	23. f: 16.88288 (1.0910e-04)	g: 0.10348 (6.6870e-07 - 1.1118e-04)	s: 0.321	v:     0
+09:55:32 [App     ] 	24. f: 16.88218 (1.0910e-04)	g: 0.10649 (6.8816e-07 - 1.0930e-04)	s: 0.314	v:     0
+09:55:34 [App     ] 	25. f: 16.86987 (1.0902e-04)	g: 0.10461 (6.7605e-07 - 1.0691e-04)	s: 0.308	v:     0
+09:55:35 [App     ] 	26. f: 16.85922 (1.0895e-04)	g: 0.09658 (6.2416e-07 - 1.0527e-04)	s: 0.302	v:     0
+09:55:37 [App     ] 	27. f: 16.85219 (1.0891e-04)	g: 0.09682 (6.2571e-07 - 1.0359e-04)	s: 0.296	v:     0
+09:55:38 [App     ] 	28. f: 16.84442 (1.0886e-04)	g: 0.10272 (6.6380e-07 - 1.0206e-04)	s: 0.290	v:     0
+09:55:40 [App     ] 	29. f: 16.83926 (1.0882e-04)	g: 0.09720 (6.2816e-07 - 1.0036e-04)	s: 0.284	v:     0
+09:55:41 [App     ] 	30. f: 16.83151 (1.0877e-04)	g: 0.09877 (6.3829e-07 - 9.9019e-05)	s: 0.278	v:     0
+09:55:43 [App     ] 	31. f: 16.82559 (1.0873e-04)	g: 0.10053 (6.4965e-07 - 9.7822e-05)	s: 0.273	v:     0
+09:55:44 [App     ] 	32. f: 16.82129 (1.0871e-04)	g: 0.11217 (7.2486e-07 - 9.6458e-05)	s: 0.267	v:     0
+09:55:46 [App     ] 	33. f: 16.81693 (1.0868e-04)	g: 0.08226 (5.3157e-07 - 9.7230e-05)	s: 0.262	v:     0
+09:55:48 [App     ] 	34. f: 16.81019 (1.0863e-04)	g: 0.10739 (6.9403e-07 - 9.7023e-05)	s: 0.257	v:     0
+09:55:49 [App     ] 	35. f: 16.80952 (1.0863e-04)	g: 0.09454 (6.1096e-07 - 9.5839e-05)	s: 0.252	v:     0
+09:55:51 [App     ] 	36. f: 16.80102 (1.0858e-04)	g: 0.08549 (5.5246e-07 - 9.4457e-05)	s: 0.247	v:     0
+09:55:53 [App     ] 	37. f: 16.79581 (1.0854e-04)	g: 0.08550 (5.5250e-07 - 9.3131e-05)	s: 0.242	v:     0
+09:55:54 [App     ] 	38. f: 16.79246 (1.0852e-04)	g: 0.10536 (6.8086e-07 - 9.2840e-05)	s: 0.237	v:     0
+09:55:56 [App     ] 	39. f: 16.78847 (1.0849e-04)	g: 0.09046 (5.8460e-07 - 9.1721e-05)	s: 0.232	v:     0
+09:55:57 [App     ] 	40. f: 16.78301 (1.0846e-04)	g: 0.08449 (5.4604e-07 - 9.0648e-05)	s: 0.227	v:     0
+09:55:59 [App     ] 	41. f: 16.78025 (1.0844e-04)	g: 0.08946 (5.7813e-07 - 8.9990e-05)	s: 0.223	v:     0
+09:56:01 [App     ] 	42. f: 16.77678 (1.0842e-04)	g: 0.08592 (5.5526e-07 - 8.8543e-05)	s: 0.218	v:     0
+09:56:02 [App     ] 	43. f: 16.77379 (1.0840e-04)	g: 0.08073 (5.2170e-07 - 8.7462e-05)	s: 0.214	v:     0
+09:56:04 [App     ] 	44. f: 16.77001 (1.0837e-04)	g: 0.07204 (4.6555e-07 - 8.6293e-05)	s: 0.210	v:     0
+09:56:05 [App     ] 	45. f: 16.76544 (1.0835e-04)	g: 0.07154 (4.6233e-07 - 8.5429e-05)	s: 0.206	v:     0
+09:56:06 [App     ] Mesh subdivided: 154741/308315 -> 171875/342402 vertices/faces
+新版本错误的解决方式：通过sudo swapon swapfile来增加交换内存
+
+4.纹理贴图：
+老版本（计算机视觉life）：./bin/TextureMesh -w /home/hqd/workspace/3dRecon/MVS/data -i test_dense.mvs -o test_texture.mvs
+用在新版本可能会出现的错误：
+11:18:52 [App     ] OpenMVS x64 v2.3.0
+11:18:52 [App     ] Build date: Jul 27 2024, 09:15:31
+11:18:52 [App     ] CPU: AMD Ryzen 9 7945HX with Radeon Graphics         (32 cores)
+11:18:52 [App     ] RAM: 14.79GB Physical Memory 8.00GB Virtual Memory
+11:18:52 [App     ] OS: Linux 6.5.0-35-generic (x86_64)
+11:18:52 [App     ] Disk: 382.39GB (494.78GB) space
+11:18:52 [App     ] SSE & AVX compatible CPU & OS detected
+11:18:52 [App     ] Command line: TextureMesh -w /home/hqd/workspace/3dRecon/MVS/data -i test_dense.mvs -o test_texture.mvs
+11:18:54 [App     ] MapSMtoCores for SM 8.9 is undefined; default to use 64 cores/SM
+11:18:54 [App     ] CUDA device 0 initialized: NVIDIA GeForce RTX 4060 Laptop GPU (compute capability 8.9; memory 7.75GB)
+11:18:54 [App     ] Camera model loaded: platform 0; camera  0; f 1.054x1.054; poses 11
+11:18:54 [App     ] Scene loaded from interface format (5ms):
+	11 images (11 calibrated) with a total of 15.81 MPixels (1.44 MPixels/image)
+	12683 points, 0 vertices, 0 faces
+11:18:54 [App     ] error: invalid mesh file
+11:18:54 [App     ] error: cannot load mesh file
+11:18:54 [App     ] MEMORYINFO: {
+11:18:54 [App     ] 	VmPeak:	 5196600 kB
+11:18:54 [App     ] 	VmSize:	 5183324 kB
+11:18:54 [App     ] } ENDINFO
+新版本：./bin/TextureMesh -w /home/hqd/workspace/3dRecon/MVS/data test_dense.mvs -m test_refinemesh.ply -o test_texture.mvs
+
+

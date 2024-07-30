@@ -53,21 +53,21 @@ class MVS_API PointCloud
 public:
 	typedef IDX Index;
 
-	typedef TPoint3<float> Point;
+	typedef TPoint3<float> Point;  // 点
 	typedef CLISTDEF0IDX(Point,Index) PointArr;
 
-	typedef uint32_t View;
+	typedef uint32_t View;  // 点云所处的图像帧
 	typedef SEACAVE::cList<View,const View,0,4,uint32_t> ViewArr;
 	typedef CLISTDEFIDX(ViewArr,Index) PointViewArr;
 
-	typedef float Weight;
+	typedef float Weight;  // 点云对应的权重，一般默认为1
 	typedef SEACAVE::cList<Weight,const Weight,0,4,uint32_t> WeightArr;
 	typedef CLISTDEFIDX(WeightArr,Index) PointWeightArr;
 
-	typedef TPoint3<float> Normal;
+	typedef TPoint3<float> Normal;  // 法向量
 	typedef CLISTDEF0IDX(Normal,Index) NormalArr;
 
-	typedef Pixel8U Color;
+	typedef Pixel8U Color;  // 颜色值
 	typedef CLISTDEF0IDX(Color,Index) ColorArr;
 
 	typedef AABB3f Box;
