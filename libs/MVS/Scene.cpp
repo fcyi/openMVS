@@ -798,21 +798,36 @@ bool Scene::EstimateNeighborViewsPointCloud(unsigned maxResolution)
 // extract also all 3D points seen by the reference image;
 // (inspired by: "Multi-View Stereo for Community Photo Collections", Goesele, 2007)
 //  - nInsideROI: 0 - ignore ROI, 1 - weight more ROI points, 2 - consider only ROI points
+// 邻域帧选择 
+/**
+ * @brief 邻域帧选择，主要是依据三个条件：共视点f在两个图像(V,R)的夹角(fV与fR组成的夹角)；邻域帧R与当前帧V的分辨率是否接近；
+ *        共视点在图像中覆盖的面积area ，利用这三个条件我们给每一个候选者计算了一个score，分数越大越适合做邻域
+ *		  思考：为什么选择这三个条件？？？见课件
+ * @param[in] ID                  当前帧id，计算其邻域帧
+ * @param[in] points              当前帧看到的所有三维稀疏点
+ * @param[in] nMinViews           最小邻域 如果帧邻域小于该值认为没有足够邻域无法深度图计算
+ * @param[in] nMinPointViews      用来判断有效点，如果能看该3d点的views大于该阈值则保存用于面积计算
+ * @param[in] fOptimAngle         角度阈值，越接近该值邻域帧越适合当前帧默认10°
+ * @return true 
+ * @return false 
+ */
 bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinViews, unsigned nMinPointViews, float fOptimAngle, unsigned nInsideROI)
 {
 	ASSERT(points.empty());
 
 	// extract the estimated 3D points and the corresponding 2D projections for the reference image
+	// 利用输入的稀疏点投影到refer帧上计算2D 投影坐标
 	Image& imageData = images[ID];
 	ASSERT(imageData.IsValid());
 	ViewScoreArr& neighbors = imageData.neighbors;
 	ASSERT(neighbors.empty());
 	struct Score {
-		float score;
-		float avgScale;
-		float avgAngle;
-		uint32_t points;
+		float score;      // 衡量邻域帧与当前帧匹配程度
+		float avgScale;   // 当前帧与邻域帧的平均尺度
+		float avgAngle;   // 共视点在两个图像夹角平均值
+		uint32_t points;  // 共视点个数
 	};
+	// 该变量size是所有帧的数量，用来存储所有帧与当前帧的共视信息以便筛选neighborViews
 	CLISTDEF0(Score) scores(images.size());
 	scores.Memset(0);
 	if (nMinPointViews > nCalibratedImages)
@@ -822,6 +837,9 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 	const float sigmaAngleSmall(-1.f/(2.f*SQUARE(fOptimAngle*0.38f)));
 	const float sigmaAngleLarge(-1.f/(2.f*SQUARE(fOptimAngle*0.7f)));
 	const bool bCheckInsideROI(nInsideROI > 0 && IsBounded());
+	// 查找当前id能看到的所有3D点存储到points中并计算这些点平均深度及与当前id共视的所有帧view并计算3D点与当前帧
+	// 和共视帧的相机原点坐标连线夹角angle,score=min((angle/foptiangle)^1.5,1)*wScale，该score意义是夹角越接
+	// 近我们设置的阈值foptiangle分数越高，一般阈值10°。目的是避免立体匹配时两帧图像夹角太小（基线小）	
 	FOREACH(idx, pointcloud.points) {
 		const PointCloud::ViewArr& views = pointcloud.pointViews[idx];
 		ASSERT(views.IsSorted());
@@ -838,22 +856,28 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		ASSERT(depth > 0);
 		if (depth <= 0)
 			continue;
-		// store this point
+		// store this point，存储point
 		if (views.size() >= nMinPointViews)
 			points.push_back((uint32_t)idx);
 		imageData.avgDepth += depth;
 		++nPoints;
 		// score shared views
+		// score 共视views
 		const Point3f V1(imageData.camera.C - Cast<REAL>(point));
-		const float footprint1(imageData.camera.GetFootprintImage(point));
+		const float footprint1(imageData.camera.GetFootprintImage(point));  // f/d 
 		for (const PointCloud::View& view: views) {
 			if (view == ID)
 				continue;
 			const Image& imageData2 = images[view];
 			const Point3f V2(imageData2.camera.C - Cast<REAL>(point));
+			// 共视点与左右相机中心的连线的夹角
 			const float fAngle(ACOS(ComputeAngle(V1.ptr(), V2.ptr())));
+			// wangle=min((alfa/thresh)^1.5,1)选择1.2次方（论文中是2），2次方目的是为增强角度下降带来的影响
+			//? 为什么角度这个参数公式中并没有对角度远大于10做限制？
+			// 原因是特征点计算时已经对大角度处理过了，角度比较大时是没有共视特征点的
 			const float wAngle(EXP(SQUARE(fAngle-fOptimAngle)*(fAngle<fOptimAngle?sigmaAngleSmall:sigmaAngleLarge)));
 			const float footprint2(imageData2.camera.GetFootprintImage(point));
+			// 视差与深度的关系 depth=fb/dis  dis=fb/depth  fScaleRatio即为视差之比也可以代表两个图像的尺度关系
 			const float fScaleRatio(footprint1/footprint2);
 			float wScale;
 			if (fScaleRatio > 1.6f)
@@ -873,6 +897,8 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 		imageData.avgDepth /= nPoints;
 
 	// select best neighborViews
+	// 计算reference 与上述得到的每一个邻域帧的共视的3d点在reference图像上投影面积,进而得到
+	// 最终的每个候选邻域帧的score即上面由角度计算的分数与面积乘积。然后根据分数排序。
 	if (neighbors.empty()) {
 		Point2fArr projs(0, points.size());
 		FOREACH(IDB, images) {
@@ -884,6 +910,7 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 				continue;
 			ASSERT(ID != IDB);
 			// compute how well the matched features are spread out (image covered area)
+			// 计算匹配的特征点在两个图像中覆盖的像素面积，取最小面积参与score参数计算
 			const Point2f boundsA(imageData.GetSize());
 			const Point2f boundsB(imageDataB.GetSize());
 			ASSERT(projs.empty());
@@ -894,25 +921,31 @@ bool Scene::SelectNeighborViews(uint32_t ID, IndexArr& points, unsigned nMinView
 				if (views.FindFirst(IDB) == PointCloud::ViewArr::NO_INDEX)
 					continue;
 				const PointCloud::Point& point = pointcloud.points[idx];
+				// 投影到当前帧，并将投影的像素坐标存储在projs中
 				Point2f& ptA = projs.emplace_back(imageData.camera.ProjectPointP(point));
+				// 投影到邻域帧，用来后面判断是否在图像内
 				Point2f ptB = imageDataB.camera.ProjectPointP(point);
+				// 如果投影点超出当前帧或邻域帧，则该点不是这两帧共视点，从projs中剔除
 				if (!imageData.camera.IsInside(ptA, boundsA) || !imageDataB.camera.IsInside(ptB, boundsB))
 					projs.RemoveLast();
 			}
 			ASSERT(projs.size() <= score.points);
 			if (projs.empty())
 				continue;
+			// 根据上面计算的投影点坐标计算这些投影点覆盖的面积
 			const float area(ComputeCoveredArea<float,2,16,false>((const float*)projs.data(), projs.size(), boundsA.ptr()));
 			projs.Empty();
 			// store image score
+			// 存储image的score
 			ViewScore& neighbor = neighbors.AddEmpty();
 			neighbor.ID = IDB;
 			neighbor.points = score.points;
-			neighbor.scale = score.avgScale/score.points;
+			neighbor.scale = score.avgScale/score.points;  // scale 计算和用途可参考上述论文5.1
 			neighbor.angle = score.avgAngle/score.points;
 			neighbor.area = area;
 			neighbor.score = score.score*MAXF(area,0.01f);
 		}
+		// 根据score的大小进行排序
 		neighbors.Sort([](const ViewScore& i, const ViewScore& j) {
 			return i.score > j.score;
 		});
@@ -950,9 +983,24 @@ void Scene::SelectNeighborViews(unsigned nMinViews, unsigned nMinPointViews, flo
 
 
 // keep only the best neighbors for the reference image
+// 只保留最佳邻域帧
+/**
+ * @brief  邻域帧滤波
+ * 
+ * @param[in] neighbors  待滤波的邻域帧
+ * @param[in] fMinArea   最小面积
+ * @param[in] fMinScale  图像scale滤波最小值
+ * @param[in] fMaxScale  图像scale滤波最大值
+ * @param[in] fMinAngle  滤波最小角度
+ * @param[in] fMaxAngle  滤波最大角度
+ * @param[in] nMaxViews  最大邻域帧个数
+ * @return true 
+ * @return false 
+ */
 bool Scene::FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea, float fMinScale, float fMaxScale, float fMinAngle, float fMaxAngle, unsigned nMaxViews)
 {
 	// remove invalid neighbor views
+	// 移除无效的邻域views
 	const unsigned nMinViews(MAXF(4u, nMaxViews*3/4));
 	RFOREACH(n, neighbors) {
 		const ViewScore& neighbor = neighbors[n];
@@ -970,6 +1018,7 @@ bool Scene::FilterNeighborViews(ViewScoreArr& neighbors, float fMinArea, float f
 
 
 // export all estimated cameras in a MeshLab MLP project as raster layers
+// 参数打印
 bool Scene::ExportCamerasMLP(const String& fileName, const String& fileNameScene) const
 {
 	static const char mlp_header[] =

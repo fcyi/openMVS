@@ -78,27 +78,29 @@ typedef Mesh::FIndex FIndex;
 
 class MeshRefine {
 public:
-	typedef TPoint3<Real> Grad;
-	typedef CLISTDEF0IDX(Grad,VIndex) GradArr;
+	typedef TPoint3<Real> Grad;  // 梯度
+	typedef CLISTDEF0IDX(Grad,VIndex) GradArr;  // 存放每个点梯度的list
 
-	typedef TImage<cuint32_t> FaceMap;
-	typedef TImage<Point3f> BaryMap;
+	typedef TImage<cuint32_t> FaceMap;  // 存放投影到图像上的face的id（每个像素值是face id）
+	typedef TImage<Point3f> BaryMap;   // 图像上每个像素对应的空间位置在face中的重心坐标
 
 	// store necessary data about a view
+	// view 存储每帧图像相关信息
 	struct View {
 		typedef TPoint2<float> Grad;
 		typedef TImage<Grad> ImageGrad;
-		Image32F image; // image pixels
-		ImageGrad imageGrad; // image pixel gradients
-		TImage<Real> imageMean; // image pixels mean
-		TImage<Real> imageVar; // image pixels variance
-		FaceMap faceMap; // remember for each pixel what face projects there
-		DepthMap depthMap; // depth-map
-		BaryMap baryMap; // barycentric coordinates
+		Image32F image; // image pixels，灰度图
+		ImageGrad imageGrad; // image pixel gradients，梯度图
+		TImage<Real> imageMean; // image pixels mean，平均值
+		TImage<Real> imageVar; // image pixels variance，方差
+		FaceMap faceMap; // remember for each pixel what face projects there，记录每个像素上是哪个face投影的
+		DepthMap depthMap; // depth-map，深度图
+		BaryMap baryMap; // barycentric coordinates，重心坐标
 	};
 	typedef CLISTDEF2(View) ViewsArr;
 
 	// used to render a mesh for optimization
+	// 用于渲染mesh,计算facemap barymap
 	struct RasterMesh : TRasterMesh<RasterMesh> {
 		typedef TRasterMesh<RasterMesh> Base;
 		FaceMap& faceMap;
@@ -111,6 +113,7 @@ public:
 			faceMap.memset((uint8_t)NO_ID);
 			baryMap.memset(0);
 		}
+		// 计算像素点对应depth，faceID，重心
 		void Raster(const ImageRef& pt, const Point3f& bary) {
 			const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
 			const Depth z(ComputeDepth(pbary));
@@ -143,6 +146,7 @@ public:
 	double ScoreMesh(double* gradients);
 
 	// given a vertex position and a projection camera, compute the projected position and its derivative
+	// 投影顶点到图像上
 	template <typename TP, typename TX, typename T, typename TJ>
 	static T ProjectVertex(const TP* P, const TX* X, T* x, TJ* jacobian=NULL);
 
@@ -190,17 +194,18 @@ public:
 	void ThSmoothVertices2(VIndex idxStart, VIndex idxEnd);
 
 public:
-	const Real weightRegularity; // a scalar regularity weight to balance between photo-consistency and regularization terms
-	Real ratioRigidityElasticity; // a scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity
-	const unsigned nResolutionLevel; // how many times to scale down the images before mesh optimization
-	const unsigned nMinResolution; // how many times to scale down the images before mesh optimization
-	const unsigned nReduceMemory; // recompute image mean and variance in order to reduce memory requirements
-	unsigned nAlternatePair; // using an image pair alternatively as reference image (0 - both, 1 - alternate, 2 - only left, 3 - only right)
-	unsigned iteration; // current refinement iteration
+	const Real weightRegularity; // 光度一致性和正则项平衡系数，a scalar regularity weight to balance between photo-consistency and regularization terms
+	Real ratioRigidityElasticity; // 正则项系数，a scalar ratio used to compute the regularity gradient as a combination of rigidity and elasticity
+	const unsigned nResolutionLevel; // 控制用来优化mesh的图像分辨率，how many times to scale down the images before mesh optimization
+	const unsigned nMinResolution; // 图像最小分辨率，how many times to scale down the images before mesh optimization
+	const unsigned nReduceMemory; // 是否减少内存占用，recompute image mean and variance in order to reduce memory requirements
+	unsigned nAlternatePair; // 控制如何使用图像对里面图像的作为参考图像，using an image pair alternatively as reference image (0 - both, 1 - alternate, 2 - only left, 3 - only right)
+	unsigned iteration; // 记录第几次迭代，current refinement iteration
 
-	Scene& scene; // the mesh vertices and faces
+	Scene& scene; // 存放mesh的顶点和face，the mesh vertices and faces
 
 	// gradient related
+	// 梯度相关的变量
 	float scorePhoto;
 	float scoreSmooth;
 	GradArr photoGrad;
@@ -210,19 +215,21 @@ public:
 	GradArr smoothGrad2;
 
 	// valid after ListCameraFaces()
-	Mesh::NormalArr& faceNormals; // normals corresponding to each face
+	Mesh::NormalArr& faceNormals; // 每个face的法线，normals corresponding to each face
 
 	// valid the entire time, but changes
-	Mesh::VertexArr& vertices;
-	Mesh::FaceArr& faces;
-	Mesh::VertexVerticesArr& vertexVertices; // for each vertex, the list of adjacent vertices
-	Mesh::VertexFacesArr& vertexFaces; // for each vertex, the list of faces containing it
-	BoolArr& vertexBoundary; // for each vertex, stores if it is at the boundary or not
+	// 整个期间都有效
+	Mesh::VertexArr& vertices;  // 顶点
+	Mesh::FaceArr& faces;  // face
+	Mesh::VertexVerticesArr& vertexVertices; // 每个顶点相邻的顶点（one-ring 顶点），for each vertex, the list of adjacent vertices
+	Mesh::VertexFacesArr& vertexFaces; // 每个顶点包含的faces，for each vertex, the list of faces containing it
+	BoolArr& vertexBoundary; // 存储每个顶点是否在边界，for each vertex, stores if it is at the boundary or not
 
 	// constant the entire time
-	ImageArr& images;
-	ViewsArr views; // views' data
-	PairIdxArr pairs; // image pairs used to refine the mesh
+	// 整个优化期间固定不变的量
+	ImageArr& images;  // 用来优化的图像
+	ViewsArr views; // 图像信息，views' data
+	PairIdxArr pairs; // 用来优化mesh的图像对，image pairs used to refine the mesh
 
 	// multi-threading
 	static SEACAVE::EventQueue events; // internal events queue (processed by the working threads)
@@ -335,7 +342,7 @@ SEACAVE::EventQueue MeshRefine::events;
 SEACAVE::cList<SEACAVE::Thread> MeshRefine::threads;
 CriticalSection MeshRefine::cs;
 Semaphore MeshRefine::sem;
-
+// 初始化
 MeshRefine::MeshRefine(Scene& _scene, unsigned _nReduceMemory, unsigned _nAlternatePair, Real _weightRegularity, Real _ratioRigidityElasticity, unsigned _nResolutionLevel, unsigned _nMinResolution, unsigned nMaxViews, unsigned nMaxThreads)
 	:
 	weightRegularity(_weightRegularity),
@@ -354,12 +361,14 @@ MeshRefine::MeshRefine(Scene& _scene, unsigned _nReduceMemory, unsigned _nAltern
 	images(_scene.images)
 {
 	// start worker threads
+	// 启动线程
 	ASSERT(nMaxThreads > 0);
 	ASSERT(threads.IsEmpty());
 	threads.Resize(nMaxThreads);
 	FOREACHPTR(pThread, threads)
 		pThread->start(ThreadWorkerTmp, this);
 	// keep only best neighbor views for each image
+	// 给每个图像只保留一个邻域帧
 	std::unordered_set<uint64_t> mapPairs;
 	mapPairs.reserve(images.GetSize()*nMaxViews);
 	ASSERT(events.IsEmpty());
@@ -373,6 +382,7 @@ MeshRefine::MeshRefine(Scene& _scene, unsigned _nReduceMemory, unsigned _nAltern
 MeshRefine::~MeshRefine()
 {
 	// wait for the working threads to close
+	// 等待线程关闭
 	FOREACH(i, threads)
 		events.AddEvent(new EVTClose());
 	FOREACHPTR(pThread, threads)
@@ -383,6 +393,7 @@ MeshRefine::~MeshRefine()
 // load and initialize all images at the given scale
 // and compute the gradient for each input image
 // optional: blur them using the given sigma
+// resize图像，计算梯度，滤波（可选）
 bool MeshRefine::InitImages(Real scale, Real sigma)
 {
 	views.Resize(images.GetSize());
@@ -396,6 +407,7 @@ bool MeshRefine::InitImages(Real scale, Real sigma)
 
 // extract array of triangles incident to each vertex
 // and check each vertex if it is at the boundary or not
+// 提取每个顶点的相关faces即三角face的三个顶点中包含该顶点的所有faces
 void MeshRefine::ListVertexFacesPre()
 {
 	scene.mesh.EmptyExtra();
@@ -408,10 +420,12 @@ void MeshRefine::ListVertexFacesPost()
 }
 
 // extract array of faces viewed by each image
+// 提取被每个图像看到的所有面
 void MeshRefine::ListCameraFaces()
 {
 	// extract array of faces viewed by each camera
-	typedef CLISTDEF2(Mesh::FaceIdxArr) CameraFacesArr;
+	// 提取被每个相机看到的所有面
+	typedef CLISTDEF2(Mesh::FaceIdxArr) CameraFacesArr;  //存放相机能看到的所有face的id存放相机能看到的所有face的id的list
 	CameraFacesArr arrCameraFaces(images.GetSize()); {
 		Mesh::Octree octree;
 		Mesh::FacesInserter::CreateOctree(octree, scene.mesh);
@@ -426,6 +440,7 @@ void MeshRefine::ListCameraFaces()
 	}
 
 	// project mesh to each camera plane
+	// 投影mesh到每个相机平面
 	ASSERT(events.IsEmpty());
 	FOREACH(idxImage, images)
 		events.AddEvent(new EVTProjectMesh(idxImage, arrCameraFaces[idxImage]));
@@ -433,13 +448,15 @@ void MeshRefine::ListCameraFaces()
 }
 
 // compute for each face the projection area as the maximum area in both images of a pair
+// 计算face的最大投影面积，调用前要保证ListCameraFaces先调用
 // (make sure ListCameraFaces() was called before)
 void MeshRefine::ListFaceAreas(Mesh::AreaArr& maxAreas)
 {
 	ASSERT(maxAreas.IsEmpty());
 	// for each image, compute the projection area of visible faces
+	// 对每帧图像，计算其能看到的所有faces在该图像上的投影面积
 	typedef cList<Mesh::AreaArr> ImageAreaArr;
-	ImageAreaArr viewAreas(images.GetSize());
+	ImageAreaArr viewAreas(images.GetSize());  // 存储每帧的能看到的faces的投影面积
 	FOREACH(idxImage, images) {
 		const Image& imageData = images[idxImage];
 		if (!imageData.IsValid())
@@ -447,8 +464,9 @@ void MeshRefine::ListFaceAreas(Mesh::AreaArr& maxAreas)
 		Mesh::AreaArr& areas = viewAreas[idxImage];
 		areas.Resize(faces.GetSize());
 		areas.Memset(0);
-		const FaceMap& faceMap = views[idxImage].faceMap;
+		const FaceMap& faceMap = views[idxImage].faceMap;  // faces投影在image上map，即与图像对应的map的每个像素记录了是哪个face投影的
 		// compute area covered by all vertices (incident faces) viewed by this image
+		// 计算每个face覆盖的面积
 		for (int j=0; j<faceMap.rows; ++j) {
 			for (int i=0; i<faceMap.cols; ++i) {
 				const FIndex idxFace(faceMap(j,i));
@@ -460,6 +478,7 @@ void MeshRefine::ListFaceAreas(Mesh::AreaArr& maxAreas)
 		}
 	}
 	// for each pair, mark the faces that have big projection areas in both images
+	// 对每个depth计算的图像对，记录face投影面积最大的值
 	maxAreas.Resize(faces.GetSize());
 	maxAreas.Memset(0);
 	FOREACHPTR(pPair, pairs) {
@@ -467,6 +486,7 @@ void MeshRefine::ListFaceAreas(Mesh::AreaArr& maxAreas)
 		const Mesh::AreaArr& areasB = viewAreas[pPair->j];
 		ASSERT(areasA.GetSize() == areasB.GetSize());
 		FOREACH(f, areasA) {
+			//? 为啥不是取pair里面的最大值
 			const uint16_t minArea(MINF(areasA[f], areasB[f]));
 			uint16_t& maxArea = maxAreas[f];
 			if (maxArea < minArea)
@@ -477,21 +497,31 @@ void MeshRefine::ListFaceAreas(Mesh::AreaArr& maxAreas)
 
 // decimate or subdivide mesh such that for each face there is no image pair in which
 // its projection area is bigger than the given number of pixels in both images
+/**
+ * @brief mesh细分或下采样
+ * 
+ * @param[in] maxArea     每个三角网格最大面积
+ * @param[in] fDecimate   下采样率 
+ * @param[in] nCloseHoles  补洞最小尺寸
+ * @param[in] nEnsureEdgeSize 是否要保证边界尺寸不会太大或太小 默认1
+ */
 void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nCloseHoles, unsigned nEnsureEdgeSize)
 {
 	Mesh::AreaArr maxAreas;
 
 	// first decimate if necessary
-	const bool bNoDecimation(fDecimate >= 1.f);
+	const bool bNoDecimation(fDecimate >= 1.f);  // 采样率大于等于1则无需采样
 	const bool bNoSimplification(maxArea == 0);
 	if (!bNoDecimation) {
 		if (fDecimate > 0.f) {
 			// decimate to the desired resolution
+			// 下采样
 			scene.mesh.Clean(fDecimate, 0.f, false, nCloseHoles, 0u, 0.f, false);
 			scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f, true);
 
 			#ifdef MESHOPT_ENSUREEDGESIZE
 			// make sure there are no edges too small or too long
+			// 保证边界不会过大过短
 			if (nEnsureEdgeSize > 0 && bNoSimplification) {
 				scene.mesh.EnsureEdgeSize();
 				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f, true);
@@ -499,26 +529,32 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 			#endif
 
 			// re-map vertex and camera faces
+			// 前面采样后，顶点和face会发生变化，需重新计算
 			ListVertexFacesPre();
 		} else {
 			// extract array of faces viewed by each camera
+			// 提取被每个图像看到的所有面
 			ListCameraFaces();
 
 			// estimate the faces' area that have big projection areas in both images of a pair
+			// 计算最大投影面积
 			ListFaceAreas(maxAreas);
 			ASSERT(!maxAreas.IsEmpty());
 
 			const float fMaxArea((float)(maxArea > 0 ? maxArea : 64));
-			const float fMedianArea(6.f*(float)Mesh::AreaArr(maxAreas).GetMedian());
+			const float fMedianArea(6.f*(float)Mesh::AreaArr(maxAreas).GetMedian()); //取中值
+			// 如果投影面积均值比要求的最大值小，说明网格过于稠密需要下采样
 			if (fMedianArea < fMaxArea) {
 				maxAreas.Empty();
 
 				// decimate to the auto detected resolution
+				// 下采样
 				scene.mesh.Clean(MAXF(0.1f, fMedianArea/fMaxArea), 0.f, false, nCloseHoles, 0u, 0.f, false);
 				scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f, true);
 
 				#ifdef MESHOPT_ENSUREEDGESIZE
 				// make sure there are no edges too small or too long
+				// 保证边界不会过大过短
 				if (nEnsureEdgeSize > 0 && bNoSimplification) {
 					scene.mesh.EnsureEdgeSize();
 					scene.mesh.Clean(1.f, 0.f, false, nCloseHoles, 0u, 0.f, true);
@@ -532,7 +568,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	}
 	if (bNoSimplification)
 		return;
-
+	// 前面采样后，顶点和face会发生变化，需重新计算
 	if (maxAreas.IsEmpty()) {
 		// extract array of faces viewed by each camera
 		ListCameraFaces();
@@ -542,6 +578,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	}
 
 	// subdivide mesh faces if its projection area is bigger than the given number of pixels
+	// 如果投影面积比给的阈值大，说明网格比较稀疏，需进行网格细分提高分辨率
 	const size_t numVertsOld(vertices.GetSize());
 	const size_t numFacesOld(faces.GetSize());
 	scene.mesh.Subdivide(maxAreas, maxArea);
@@ -558,6 +595,7 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 	#endif
 
 	// re-map vertex and camera faces
+	// 重新计算提取每个顶点的相关faces即三角face的三个顶点中包含该顶点的所有faces
 	ListVertexFacesPre();
 
 	DEBUG_EXTRA("Mesh subdivided: %u/%u -> %u/%u vertices/faces", numVertsOld, numFacesOld, vertices.GetSize(), faces.GetSize());
@@ -571,17 +609,27 @@ void MeshRefine::SubdivideMesh(uint32_t maxArea, float fDecimate, unsigned nClos
 
 // score mesh using photo-consistency
 // and compute vertices gradient using analytical method
+// 计算顶点调整量使得loss更小mesh更准确
+/**
+ * @brief 利用光度一致性（ZNCC）和正则项构建优化目标函数，计算每个顶点的梯度。公式推导见课件
+ * 
+ * @param[out] gradients 每个顶点的梯度
+ * @return double 分数
+ */
 double MeshRefine::ScoreMesh(double* gradients)
 {
 	// extract array of faces viewed by each camera
+	// 提取每个相机看到的faces
 	ListCameraFaces();
 
 	// compute face normals
+	// 计算faces 的法线
 	scene.mesh.ComputeNormalFaces();
 
 	// for each pair of images, compute a photo-consistency score
 	// between the reference image and the pixels of the second image
 	// projected in the reference image through the mesh surface
+	// Step 1 通过mesh投影到reference图像上的faces,投影到ref和src像素上，对每一对图像（reference和source图像）计算一个光度一致性分数 
 	scorePhoto = 0;
 	photoGrad.Resize(vertices.GetSize());
 	photoGrad.Memset(0);
@@ -612,6 +660,7 @@ double MeshRefine::ScoreMesh(double* gradients)
 	WaitThreadWorkers(nAlternatePair ? pairs.GetSize() : pairs.GetSize()*2);
 
 	// loop through all vertices and compute the smoothing score
+	// Step 2 循环mesh上所有的顶点，计算平滑分数主要是计算顶点Laplace: grad1=1/NΣvi-v,(vi 是v的one-ring的所有点)
 	scoreSmooth = 0;
 	const VIndex idxStep((vertices.GetSize()+(VIndex)threads.GetSize()-1)/(VIndex)threads.GetSize());
 	smoothGrad1.Resize(vertices.GetSize());
@@ -626,6 +675,8 @@ double MeshRefine::ScoreMesh(double* gradients)
 	WaitThreadWorkers(threads.GetSize());
 	}
 	// loop through all vertices and compute the smoothing gradient
+	// Step 3 循环所有顶点计算平滑梯度,计算的是图像梯度的梯度*权重 grad2=nrm*(1/N*Σgradvi-gradv)
+	// nrm=1/(1+1/Nisum(1/Nj))
 	smoothGrad2.Resize(vertices.GetSize());
 	{
 	ASSERT(events.IsEmpty());
@@ -639,6 +690,7 @@ double MeshRefine::ScoreMesh(double* gradients)
 	}
 
 	// set the final gradient as the combination of photometric and smoothness gradients
+	// Step 4 结合光度一致性和平滑梯度计算最终的梯度
 	if (ratioRigidityElasticity >= 1.f) {
 		FOREACH(v, vertices)
 			((Point3d*)gradients)[v] = photoGradNorm[v] > 0 ?
@@ -647,6 +699,7 @@ double MeshRefine::ScoreMesh(double* gradients)
 	} else {
 		// compute smoothing gradient as a combination of level 1 and 2 of the Laplacian operator;
 		// (see page 105 of "Stereo and Silhouette Fusion for 3D Object Modeling from Uncalibrated Images Under Circular Motion" C. Hernandez, 2004)
+		// 平滑梯度采用Laplace1和Laplace2结合
 		const Real rigidity((Real(1)-ratioRigidityElasticity)*weightRegularity);
 		const Real elasticity(ratioRigidityElasticity*weightRegularity);
 		FOREACH(v, vertices)
@@ -660,6 +713,7 @@ double MeshRefine::ScoreMesh(double* gradients)
 
 // given a vertex position and a projection camera, compute the projected position and its derivative
 // returns the depth
+// 投影顶点到图像
 template <typename TP, typename TX, typename T, typename TJ>
 T MeshRefine::ProjectVertex(const TP* P, const TX* X, T* x, TJ* jacobian)
 {
@@ -723,16 +777,19 @@ bool MeshRefine::IsDepthSimilar(const DepthMap& depthMap, const Point2f& pt, Dep
 }
 
 // project mesh to the given camera plane
+// 将mesh投影到给定的相机平面上
 void MeshRefine::ProjectMesh(
 	const Mesh::VertexArr& vertices, const Mesh::FaceArr& faces, const Mesh::FaceIdxArr& cameraFaces,
 	const Camera& camera, const Image8U::Size& size,
 	DepthMap& depthMap, FaceMap& faceMap, BaryMap& baryMap)
 {
 	// init view data
+	// 初始化
 	depthMap.create(size);
 	faceMap.create(size);
 	baryMap.create(size);
 	// project all triangles on this image and keep the closest ones
+	// 投影mesh到图像上得到每个像素的faceid 深度
 	RasterMesh rasterer(vertices, camera, depthMap, faceMap, baryMap);
 	rasterer.Clear();
 	for (auto idxFace : cameraFaces) {
@@ -745,13 +802,14 @@ void MeshRefine::ProjectMesh(
 // project image from view B to view A through the mesh;
 // the projected image is stored in imageA
 // (imageAB is assumed to be initialize to the right size)
+// 通过mesh(depthA)将B 图像投影到A上，存储在imageA
 void MeshRefine::ImageMeshWarp(
 	const DepthMap& depthMapA, const Camera& cameraA,
 	const DepthMap& depthMapB, const Camera& cameraB,
 	const Image32F& imageB, Image32F& imageA, BitMatrix& mask)
 {
 	ASSERT(!imageA.empty());
-	typedef Sampler::Linear<float> Sampler;
+	typedef Sampler::Linear<float> Sampler;  // 用来像素线性插值
 	const Sampler sampler;
 	mask.create(imageA.size());
 	mask.memset(0);
@@ -760,18 +818,20 @@ void MeshRefine::ImageMeshWarp(
 			const Depth& depthA = depthMapA(j,i);
 			if (depthA <= 0)
 				continue;
+			// A的depth计算世界坐标系下坐标X
 			const Point3 X(cameraA.TransformPointI2W(Point3(i,j,depthA)));
-			const Point3f ptC(cameraB.TransformPointW2C(X));
-			const Point2f pt(cameraB.TransformPointC2I(ptC));
-			if (!IsDepthSimilar(depthMapB, pt, ptC.z))
+			const Point3f ptC(cameraB.TransformPointW2C(X));   // 投影到B上得到相机坐标系下的3D坐标
+			const Point2f pt(cameraB.TransformPointC2I(ptC));  // 像素坐标
+			if (!IsDepthSimilar(depthMapB, pt, ptC.z))         // 如果投影到B的深度与当前深度不相似有可能是遮挡区域或计算错误
 				continue;
 			imageA(j,i) = imageB.sample<Sampler,Sampler::Type>(sampler, pt);
-			mask.set(j,i);
+			mask.set(j,i);  // 记录成功warp的像素坐标
 		}
 	}
 }
 
 // compute local variance for each image pixel
+// 计算每个像素的局部方差
 void MeshRefine::ComputeLocalVariance(const Image32F& image, const BitMatrix& mask, TImage<Real>& imageMean, TImage<Real>& imageVar)
 {
 	ASSERT(image.size() == mask.size());
@@ -783,7 +843,8 @@ void MeshRefine::ComputeLocalVariance(const Image32F& image, const BitMatrix& ma
 	const int ColsEnd(image.cols-HalfSize);
 	const int n(SQUARE(HalfSize*2+1));
 	DEC_Image(double, imageSum);
-	DEC_Image(double, imageSumSq);
+	DEC_Image(double, imageSumSq);  // 像素值平方积分图
+	// 计算积分图，像素值平方的积分图
 	#if CV_MAJOR_VERSION > 2
 	cv::integral(image, imageSum, imageSumSq, CV_64F, CV_64F);
 	#else
@@ -793,6 +854,7 @@ void MeshRefine::ComputeLocalVariance(const Image32F& image, const BitMatrix& ma
 		for (int c=HalfSize; c<ColsEnd; ++c) {
 			if (!mask(r,c))
 				continue;
+			// 计算均值
 			imageMean(r,c) = (Real)((
 				imageSum(r+HalfSize+1, c+HalfSize+1) -
 				imageSum(r+HalfSize+1, c-HalfSize  ) -
@@ -810,6 +872,7 @@ void MeshRefine::ComputeLocalVariance(const Image32F& image, const BitMatrix& ma
 				imageSumSq(r+HalfSize+1, c-HalfSize  ) -
 				imageSumSq(r-HalfSize,   c+HalfSize+1) +
 				imageSumSq(r-HalfSize,   c-HalfSize  ) ) * (1.0/(double)n));
+			// 计算方差 var=1/n*ΣI^2 - mean(I)*mean(I) 简化版
 			imageVar(r,c) = MAXF(sumSq-SQUARE(imageMean(r,c)), Real(0.0001));
 		}
 	}
@@ -817,6 +880,8 @@ void MeshRefine::ComputeLocalVariance(const Image32F& image, const BitMatrix& ma
 }
 
 // compute local ZNCC and its gradient for each image pixel
+// zncc=((ΣIa*Ib)-mean(Ia*Ib))/sqrt((ΣIa^2-mean(Ia)*mean(Ia))*(ΣIb^2-mean(Ib)*mean(Ib)))
+// 计算NCC和梯度
 float MeshRefine::ComputeLocalZNCC(
 	const Image32F& imageA, const TImage<Real>& imageMeanA, const TImage<Real>& imageVarA,
 	const Image32F& imageB, const TImage<Real>& imageMeanB, const TImage<Real>& imageVarB,
@@ -833,6 +898,7 @@ float MeshRefine::ComputeLocalZNCC(
 	DEC_Image(double, imageABSum);
 	{
 		DEC_Image(float, imageAB);
+		// Ia*Ib
 		cv::multiply(imageA, imageB, imageAB);
 		cv::integral(imageAB, imageABSum, CV_64F);
 		DST_Image(imageAB);
@@ -849,10 +915,12 @@ float MeshRefine::ComputeLocalZNCC(
 				imageABSum(r-HalfSize,   c+HalfSize+1) +
 				imageABSum(r-HalfSize,   c-HalfSize  ) ) * (1.0/(double)n));
 			const Real invSqrtVAVB(Real(1)/SQRT(imageVarA(r,c)*imageVarB(r,c)));
+			// zncc=((ΣIa*Ib)-mean(Ia*Ib))/sqrt((ΣIa^2-mean(Ia)*mean(Ia))*(ΣIb^2-mean(Ib)*mean(Ib)))
 			imageZNCC(r,c) = (cv - imageMeanA(r,c)*imageMeanB(r,c)) * invSqrtVAVB;
 			imageInvSqrtVAVB(r,c) = invSqrtVAVB;
 		}
 	}
+	// 计算ZNCC梯度dZNCC=(Ia-mean(Ia))/sqrt((ΣIa^2-mean(Ia)*mean(Ia))*(ΣIb^2-mean(Ib)*mean(Ib))) - (Ib-mean(Ib))*zncc/ΣIb^2-mean(Ib)*mean(Ib)
 	DST_Image(imageABSum);
 	imageDZNCC.memset(0);
 	for (int r=HalfSize; r<RowsEnd; ++r) {
@@ -897,6 +965,7 @@ float MeshRefine::ComputeLocalZNCC(
 }
 
 // compute the photometric gradient for all vertices seen by an image pair
+// !!! v=v+n*d 计算光度梯度,推导最小二乘优化求解过程，链式法则 参考slam第二版VO里面优化T的过程
 void MeshRefine::ComputePhotometricGradient(
 	const Mesh::FaceArr& faces, const Mesh::NormalArr& normals,
 	const DepthMap& depthMapA, const FaceMap& faceMapA, const BaryMap& baryMapA, const Camera& cameraA,
@@ -914,6 +983,7 @@ void MeshRefine::ComputePhotometricGradient(
 	Point2f xB;
 	photoGrad.Memset(0);
 	photoGradNorm.Memset(0);
+	// 逐个像素计算
 	for (int r=HalfSize; r<RowsEnd; ++r) {
 		for (int c=HalfSize; c<ColsEnd; ++c) {
 			if (!mask(r,c))
@@ -921,7 +991,7 @@ void MeshRefine::ComputePhotometricGradient(
 			const FIndex idxFace(faceMapA(r,c));
 			ASSERT(idxFace != NO_ID);
 			const Grad N(normals[idxFace]);
-			const Point3 rayA(cameraA.RayPoint(Point2(c,r)));
+			const Point3 rayA(cameraA.RayPoint(Point2(c,r)));  // view ray
 			const Grad dA(normalized(rayA));
 			const Real Nd(N.dot(dA));
 			#if 1
@@ -933,18 +1003,22 @@ void MeshRefine::ComputePhotometricGradient(
 			const Point3 X(rayA*REAL(depthA)+cameraA.C);
 			// project point in second image and
 			// projection Jacobian matrix in the second image of the 3D point on the surface
+			// !!! 将点投影到第二个图像上 ，雅可比矩阵计算 todo 
 			MAYBEUNUSED const float depthB(ProjectVertex(cameraB.P.val, X.ptr(), xB.ptr(), xJac.val));
 			ASSERT(depthB > 0);
 			// compute gradient in image B
+			// 计算B图像的梯度
 			const TMatrix<Real,1,2> gB(viewB.imageGrad.sample<Sampler,View::Grad>(sampler, xB));
 			// compute gradient scale
+			// 计算梯度的尺度，沿法线方向
 			const Real dZNCC(imageDZNCC(r,c));
 			const Real sg((gB*(xJac*(const TMatrix<Real,3,1>&)dA))(0)*dZNCC*RegularizationScale/Nd);
 			// add gradient to the three vertices
+			// 将梯度应用到三个顶点上
 			const Face& face(faces[idxFace]);
 			const Point3f& b(baryMapA(r,c));
 			for (int v=0; v<3; ++v) {
-				const Grad g(N*(sg*(Real)b[v]));
+				const Grad g(N*(sg*(Real)b[v]));  // 法线方向
 				const VIndex idxVert(face[v]);
 				photoGrad[idxVert] += g;
 				++photoGradNorm[idxVert];
@@ -955,6 +1029,7 @@ void MeshRefine::ComputePhotometricGradient(
 
 // computes the discrete analog of the Laplacian using
 // the umbrella-operator on the first triangle ring at each point
+// 在顶点 one-ring上计算Laplace
 float MeshRefine::ComputeSmoothnessGradient1(
 	const Mesh::VertexArr& vertices, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
 	GradArr& smoothGrad1, VIndex idxStart, VIndex idxEnd)
@@ -968,11 +1043,13 @@ float MeshRefine::ComputeSmoothnessGradient1(
 		if (vertexBoundary[idxV])
 			continue;
 		#endif
-		const Mesh::VertexIdxArr& verts = vertexVertices[idxV];
+		const Mesh::VertexIdxArr& verts = vertexVertices[idxV];  //当前顶点周围相邻的one-ring点（包含该顶点的所有faces上的点）
 		if (verts.IsEmpty())
 			continue;
+		// 邻域点求和
 		FOREACH(v, verts)
 			grad += Cast<Real>(vertices[verts[v]]);
+		// grad1=1/NΣvi-v,(vi 是v的one-ring的所有点)
 		grad = grad/(Real)verts.GetSize() - Cast<Real>(vertices[idxV]);
 		const float regularityScore((float)norm(grad));
 		ASSERT(ISFINITE(regularityScore));
@@ -982,6 +1059,7 @@ float MeshRefine::ComputeSmoothnessGradient1(
 }
 // same as above, but used to compute level 2;
 // normalized as in "Stereo and Silhouette Fusion for 3D Object Modeling from Uncalibrated Images Under Circular Motion" C. Hernandez, 2004
+// 同上，计算的是图像梯度的梯度*权重 grad2=nrm*(1/N*Σgradvi-gradv)
 void MeshRefine::ComputeSmoothnessGradient2(
 	const GradArr& smoothGrad1, const Mesh::VertexVerticesArr& vertexVertices, const BoolArr& vertexBoundary,
 	GradArr& smoothGrad2, VIndex idxStart, VIndex idxEnd)
@@ -998,6 +1076,7 @@ void MeshRefine::ComputeSmoothnessGradient2(
 		if (verts.IsEmpty())
 			continue;
 		Real w(0);
+		// 计算邻域点（one-ring）的梯度和，记录邻域点的邻域(one-ring)个数的逆之和
 		FOREACH(v, verts) {
 			const VIndex idxVert(verts[v]);
 			grad += smoothGrad1[idxVert];
@@ -1042,6 +1121,7 @@ void MeshRefine::WaitThreadWorkers(size_t nJobs)
 void MeshRefine::ThSelectNeighbors(uint32_t idxImage, std::unordered_set<uint64_t>& mapPairs, unsigned nMaxViews)
 {
 	// keep only best neighbor views
+	// 仅选择一个最好的邻域
 	const float fMinArea(0.1f);
 	const float fMinScale(0.2f), fMaxScale(3.2f);
 	const float fMinAngle(FD2R(2.5f)), fMaxAngle(FD2R(45.f));
@@ -1060,12 +1140,14 @@ void MeshRefine::ThSelectNeighbors(uint32_t idxImage, std::unordered_set<uint64_
 		mapPairs.insert(MakePairIdx((uint32_t)idxImage, neighbor.ID));
 	}
 }
+// resize图像，计算梯度，滤波（可选）
 void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 {
 	Image& imageData = images[idxImage];
 	if (!imageData.IsValid())
 		return;
 	// load and init image
+	// resize图像
 	unsigned level(nResolutionLevel);
 	const unsigned imageSize(imageData.RecomputeMaxResolution(level, nMinResolution));
 	if ((imageData.image.empty() || MAXF(imageData.width,imageData.height) != imageSize) && !imageData.ReloadImage(imageSize))
@@ -1080,18 +1162,22 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 		cv::resize(img, img, cv::Size(), scale, scale, cv::INTER_AREA);
 		imageData.width = img.width(); imageData.height = img.height();
 	}
+	// 更新相机内参
 	imageData.UpdateCamera(scene.platforms);
 	if (!nReduceMemory) {
 		// compute image mean and variance
+		// 如果不需要减少内存消耗可以先计算图像在局部窗口内的均值和方差
 		ComputeLocalVariance(img, BitMatrix(img.size(), 0xFF), view.imageMean, view.imageVar);
 	}
 	// compute image gradient
+	// 计算图像梯度存储到imageGrad
 	typedef View::Grad::Type GradType;
 	TImage<GradType> grad[2];
 	#if 0
 	cv::Sobel(img, grad[0], cv::DataType<GradType>::type, 1, 0, 3, 1.0/8.0);
 	cv::Sobel(img, grad[1], cv::DataType<GradType>::type, 0, 1, 3, 1.0/8.0);
 	#elif 1
+	// 分别计算x,y方向的梯度
 	const TMatrix<GradType,3,5> kernel(CreateDerivativeKernel3x5());
 	cv::filter2D(img, grad[0], cv::DataType<GradType>::type, kernel);
 	cv::filter2D(img, grad[1], cv::DataType<GradType>::type, kernel.t());
@@ -1100,6 +1186,7 @@ void MeshRefine::ThInitImage(uint32_t idxImage, Real scale, Real sigma)
 	cv::filter2D(img, grad[0], cv::DataType<GradType>::type, kernel);
 	cv::filter2D(img, grad[1], cv::DataType<GradType>::type, kernel.t());
 	#endif
+	// 将grad的两个单通道融合为一个2通道的矩阵imageGrad
 	cv::merge(grad, 2, view.imageGrad);
 }
 void MeshRefine::ThProjectMesh(uint32_t idxImage, const Mesh::FaceIdxArr& cameraFaces)
@@ -1112,18 +1199,28 @@ void MeshRefine::ThProjectMesh(uint32_t idxImage, const Mesh::FaceIdxArr& camera
 	ProjectMesh(vertices, faces, cameraFaces, imageData.camera, view.image.size(),
 				view.depthMap, view.faceMap, view.baryMap);
 }
+
+// 
+/**
+ * @brief 计算左右图像的光度一致性用来计算下降梯度 计算的公式推导见课件
+ * 
+ * @param[in] idxImageA 左图像
+ * @param[in] idxImageB 右图像
+ */
 void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 {
 	// fetch view A data
+	// 取viewA 相关数据
 	const Image& imageDataA = images[idxImageA];
 	ASSERT(imageDataA.IsValid());
 	const View& viewA = views[idxImageA];
-	const BaryMap& baryMapA = viewA.baryMap;
-	const FaceMap& faceMapA = viewA.faceMap;
-	const DepthMap& depthMapA = viewA.depthMap;
-	const Image32F& imageA = viewA.image;
-	const Camera& cameraA = imageDataA.camera;
+	const BaryMap& baryMapA = viewA.baryMap;     // 重心
+	const FaceMap& faceMapA = viewA.faceMap;     // pixel对应的faceid
+	const DepthMap& depthMapA = viewA.depthMap;  // 深度图
+	const Image32F& imageA = viewA.image;        // 图像
+	const Camera& cameraA = imageDataA.camera;   // 相机参数
 	// fetch view B data
+	// 取viewB相关数据
 	const Image& imageDataB = images[idxImageB];
 	ASSERT(imageDataB.IsValid());
 	const View& viewB = views[idxImageB];
@@ -1131,15 +1228,19 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	const Image32F& imageB = viewB.image;
 	const Camera& cameraB = imageDataB.camera;
 	// warp imageB to imageA using the mesh
+	// 用mesh warp B 到A图像
 	DEC_BitMatrix(mask);
 	DEC_Image(float, imageAB);
 	imageA.copyTo(imageAB);
+	// warp b->a
 	ImageMeshWarp(depthMapA, cameraA, depthMapB, cameraB, imageB, imageAB, mask);
 	// compute ZNCC and its gradient
+	// 计算 ZNCC和其梯度
 	const TImage<Real> *imageMeanA, *imageVarA;
 	if (nReduceMemory) {
 		DEC_Image(Real, _imageMeanA);
 		DEC_Image(Real, _imageVarA);
+		// 计算局部均值和方差
 		ComputeLocalVariance(viewA.image, mask, _imageMeanA, _imageVarA);
 		imageMeanA = &_imageMeanA;
 		imageVarA = &_imageVarA;
@@ -1149,9 +1250,11 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	}
 	DEC_Image(Real, imageMeanAB);
 	DEC_Image(Real, imageVarAB);
+	// 计算均值和方差
 	ComputeLocalVariance(imageAB, mask, imageMeanAB, imageVarAB);
 	DEC_Image(Real, imageZNCC);
 	DEC_Image(Real, imageDZNCC);
+	// 计算NCC
 	const float score(ComputeLocalZNCC(imageA, *imageMeanA, *imageVarA, imageAB, imageMeanAB, imageVarAB, mask, imageZNCC, imageDZNCC));
 	#ifdef MESHOPT_TYPEPOOL
 	DST_Image(imageZNCC);
@@ -1167,10 +1270,12 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 	GradArr _photoGrad(photoGrad.GetSize());
 	UnsignedArr _photoGradNorm(photoGrad.GetSize());
 	const Real RegularizationScale((Real)((REAL)(imageDataA.avgDepth*imageDataB.avgDepth)/(cameraA.GetFocalLength()*cameraB.GetFocalLength())));
+	// 计算光度梯度
 	ComputePhotometricGradient(faces, faceNormals, depthMapA, faceMapA, baryMapA, cameraA, cameraB, viewB, imageDZNCC, mask, _photoGrad, _photoGradNorm, RegularizationScale);
 	DST_Image(imageDZNCC);
 	DST_BitMatrix(mask);
 	Lock l(cs);
+	// 赋值
 	if (vertexDepth.IsEmpty()) {
 		FOREACH(i, photoGrad) {
 			if (_photoGradNorm[i] > 0) {
@@ -1193,12 +1298,14 @@ void MeshRefine::ThProcessPair(uint32_t idxImageA, uint32_t idxImageB)
 }
 void MeshRefine::ThSmoothVertices1(VIndex idxStart, VIndex idxEnd)
 {
+	// 计算顶点梯度
 	const float score(ComputeSmoothnessGradient1(vertices, vertexVertices, vertexBoundary, smoothGrad1, idxStart, idxEnd));
 	Lock l(cs);
 	scoreSmooth += score;
 }
 void MeshRefine::ThSmoothVertices2(VIndex idxStart, VIndex idxEnd)
 {
+	// 计算顶点梯度的梯度
 	ComputeSmoothnessGradient2(smoothGrad1, vertexVertices, vertexBoundary, smoothGrad2, idxStart, idxEnd);
 }
 /*----------------------------------------------------------------*/
@@ -1224,6 +1331,7 @@ void MeshRefine::ThSmoothVertices2(VIndex idxStart, VIndex idxEnd)
 #pragma pop_macro("LOG")
 
 namespace ceres {
+// 构建最小二乘问题
 class MeshProblem : public FirstOrderFunction, public IterationCallback
 {
 public:
@@ -1245,13 +1353,16 @@ public:
 
 	bool Evaluate(const double* const parameters, double* cost, double* gradient) const {
 		// update surface parameters
+		// 更新参数
 		ApplyParams(parameters);
 		// evaluate residuals and gradients
+		// 计算梯度
 		Point3dArr gradients;
 		if (!gradient) {
 			gradients.Resize(refine.vertices.GetSize());
 			gradient = (double*)gradients.Begin();
 		}
+		// 代价函数计算模型
 		*cost = refine.ScoreMesh(gradient);
 		return true;
 	}
@@ -1274,8 +1385,30 @@ protected:
 #endif // MESHOPT_CERES
 
 
-// optimize mesh using photo-consistency
+// optimize mesh using photo-consistency  photometric-consistency
 // fThPlanarVertex - threshold used to remove vertices on planar patches (percentage of the minimum depth, 0 - disable)
+/**
+ * @brief mesh优化，主要是采用光度一致性。代码用两种方式：一种调用Ceres库一种直接实现最小化优化。两者效果和性能均没有明显区别
+ * 主要参考文献：High Accuracy and Visibility-Consistent Dense Multiview Stereo
+ * 
+ * @param[in] nResolutionLevel  用来refine的图片分辨率
+ * @param[in] nMinResolution    用来refine的图片最小分辨率
+ * @param[in] nMaxViews         最大view个数
+ * @param[in] fDecimateMesh     下采样率
+ * @param[in] nCloseHoles       用来补洞的阈值，洞小于该值才会补
+ * @param[in] nEnsureEdgeSize   是否保持边界
+ * @param[in] nMaxFaceArea      refine过程中网格三角面的面积最大值（单位是像素）如果想让最终网格稠密可以将此值设小但是会比较耗性能
+ * @param[in] nScales           控制用几个图像尺度去优化mesh 默认3
+ * @param[in] fScaleStep        尺度步长 默认0.5
+ * @param[in] nReduceMemory     是否减少内存占用 默认1
+ * @param[in] nAlternatePair    控制如何使用图像对里面图像的作为参考图像using an image pair alternatively as reference image (0 - both, 1 - alternate, 2 - only left, 3 - only right)
+ * @param[in] fRegularityWeight 权重系数
+ * @param[in] fRatioRigidityElasticity 
+ * @param[in] fThPlanarVertex   平面顶点阈值
+ * @param[in] fGradientStep     梯度下降的步长
+ * @return true 
+ * @return false 
+ */
 bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsigned nMaxViews,
 					   float fDecimateMesh, unsigned nCloseHoles, unsigned nEnsureEdgeSize, unsigned nMaxFaceArea,
 					   unsigned nScales, float fScaleStep,
@@ -1289,21 +1422,27 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		return false;
 
 	// run the mesh optimization on multiple scales (coarse to fine)
+	// 多尺度去优化mesh(从低分辨率到高分辨率)
 	for (unsigned nScale=0; nScale<nScales; ++nScale) {
 		// init images
+		// Step 1 image初始化主要是resize和滤波，假设输入的图像分辨率1280*960，nResolutionLevel为1(2^1)，则用来refine的图像分辨率是640*480 
+		// 多尺度refine对应的scale 0.25 0.5 1 图像分辨率 160*120 320*240 640*480
 		const Real scale(POWI(fScaleStep, nScales-nScale-1));
-		const Real step(POWI(2.f, nScales-nScale));
+		const Real step(POWI(2.f, nScales-nScale));  // 用来计算图像高斯滤波sigma参数
 		DEBUG_ULTIMATE("Refine mesh at: %.2f image scale", scale);
 		if (!refine.InitImages(scale, Real(0.12)*step+Real(0.2)))
 			return false;
 
 		// extract array of triangles incident to each vertex
+		// Step 2提取每个顶点的相关faces即三角face的三个顶点中包含该顶点的所有faces
 		refine.ListVertexFacesPre();
 
 		// automatic mesh subdivision
+		// Step 3网格采样，补洞
 		refine.SubdivideMesh(nMaxFaceArea, nScale == 0 ? fDecimateMesh : 1.f, nCloseHoles, nEnsureEdgeSize);
 
 		// extract array of triangle normals
+		// Step 4提取每个三角面的信息
 		refine.ListVertexFacesPost();
 
 		#if TD_VERBOSE != TD_VERBOSE_OFF
@@ -1312,27 +1451,34 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 		#endif
 
 		// minimize
+		// Step 5 计算最小化目标函数：两种方法：一种直接使用ceres库进行优化，一种直接实现迭代优化。
 		#ifdef MESHOPT_CERES
+		// Ceres求解优化问题见课件介绍 
 		if (fGradientStep == 0) {
 			// DefineProblem
+			// 定义problem
 			refine.ratioRigidityElasticity = 1.f;
 			ceres::MeshProblem* problemData(new ceres::MeshProblem(refine));
 			ceres::GradientProblem problem(problemData);
 			// SetMinimizerOptions
+			// 设置最小化优化参数
 			ceres::GradientProblemSolver::Options options;
 			if (VERBOSITY_LEVEL > 1) {
 				options.logging_type = ceres::LoggingType::PER_MINIMIZER_ITERATION;
+				//输出到cout
 				options.minimizer_progress_to_stdout = true;
 			} else {
 				options.logging_type = ceres::LoggingType::SILENT;
 				options.minimizer_progress_to_stdout = false;
 			}
+			// 设置优化中止条件
 			options.function_tolerance = 1e-3;
 			options.gradient_tolerance = 1e-7;
 			options.max_num_line_search_step_size_iterations = 10;
 			options.callbacks.push_back(problemData);
-			ceres::GradientProblemSolver::Summary summary;
+			ceres::GradientProblemSolver::Summary summary;  // 优化信息
 			// SolveProblem
+			// 开始求解
 			ceres::Solve(options, problem, problemData->GetParameters(), &summary);
 			DEBUG_ULTIMATE(summary.FullReport().c_str());
 			switch (summary.termination_type) {
@@ -1346,17 +1492,21 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				return false;
 			}
 			ASSERT(summary.IsSolutionUsable());
+			// 求解的参数应用到mesh上
 			problemData->ApplyParams();
 		} else
 		#endif // MESHOPT_CERES
 		{
+			// 主要参考文献：High Accuracy and Visibility-Consistent Dense Multiview Stereo
 			// loop a constant number of iterations and apply the gradient
-			int iters(75);
-			double gstep(0.4);
+			// 利用光度一致性优化mesh的顶点坐标，迭代指定次数
+			int iters(75);  // 迭代次数
+			double gstep(0.4);  // 优化时梯度下降的步长 
 			if (fGradientStep > 1) {
 				iters = FLOOR2INT(fGradientStep);
 				gstep = (fGradientStep-(float)iters)*10;
 			}
+			// 计算迭代次数，图像分辨率越高次数越少
 			iters = MAXF(iters/(int)(nScale+1),8);
 			const int iterStop(iters*7/10);
 			const int iterStart(fThPlanarVertex > 0 ? iters*4/10 : INT_MAX);
@@ -1371,28 +1521,32 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 				// evaluate residuals and gradients
 				if (bAdaptMesh)
 					refine.vertexDepth.Resize(refine.vertices.GetSize());
+				// !!! 重点,实现优化计算了每一次迭代顶点的调整量
 				const double cost = refine.ScoreMesh(gradients.data());
 				double gv(0);
 				VIndex numVertsRemoved(0);
 				if (bAdaptMesh) {
 					// apply gradients and
 					// remove planar vertices (small gradient and almost on the center of their surrounding patch)
+					// 应用梯度，移除平面上的顶点
 					ASSERT(refine.vertexDepth.GetSize() == refine.vertices.GetSize());
 					Mesh::VertexIdxArr vertexRemove;
 					FOREACH(v, refine.vertices) {
 						Vertex& vert = refine.vertices[v];
 						const Point3d grad(gradients.row(v));
 						vert -= Cast<Vertex::Type>(grad*gstep);
-						const double gn(norm(grad));
+						const double gn(norm(grad));   // 梯度的幅值
 						gv += gn;
 						const float depth(refine.vertexDepth[v]);
 						if (depth < FLT_MAX) {
 							const float th(depth*fThPlanarVertex);
+							// 剔除平面上的点
 							if (!refine.vertexBoundary[v] && (float)gn < th && norm(refine.smoothGrad1[v]) < th)
 								vertexRemove.Insert(v);
 						}
 					}
 					if (!vertexRemove.IsEmpty()) {
+						// 移除要剔除的顶点
 						numVertsRemoved = vertexRemove.GetSize();
 						mesh.Decimate(vertexRemove);
 						refine.ListVertexFacesPost();
@@ -1400,14 +1554,18 @@ bool Scene::RefineMesh(unsigned nResolutionLevel, unsigned nMinResolution, unsig
 					refine.vertexDepth.Empty();
 				} else {
 					// apply gradients
+					// 应用梯度
 					FOREACH(v, refine.vertices) {
 						Vertex& vert = refine.vertices[v];
 						const Point3d grad(gradients.row(v));
+						// 梯度下降，调整量=梯度*乘个步长
 						vert -= Cast<Vertex::Type>(grad*gstep);
+						// 梯度的幅值
 						gv += norm(grad);
 					}
 				}
 				DEBUG_EXTRA("\t%2d. f: %.5f (%.4e)\tg: %.5f (%.4e - %.4e)\ts: %.3f\tv: %5u", iter+1, cost, cost/refine.vertices.GetSize(), gradients.norm(), gradients.norm()/refine.vertices.GetSize(), gv/refine.vertices.GetSize(), gstep, numVertsRemoved);
+				// 调整步长 减小步长
 				gstep *= 0.98;
 				progress.display(iter);
 			}

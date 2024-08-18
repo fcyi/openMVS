@@ -219,6 +219,7 @@ Mesh::Vertex Mesh::GetCenter() const
 
 
 // extract array of vertices incident to each vertex
+// 提取每个顶点相邻的顶点（one-ring）
 void Mesh::ListIncidenteVertices()
 {
 	vertexVertices.clear();
@@ -237,6 +238,7 @@ void Mesh::ListIncidenteVertices()
 }
 
 // extract the (ordered) array of triangles incident to each vertex
+// 提取每个顶点相关的面face
 void Mesh::ListIncidenteFaces()
 {
 	vertexFaces.clear();
@@ -292,6 +294,7 @@ void Mesh::ListIncidenteFaceFaces()
 
 // check each vertex if it is at the boundary or not
 // (make sure you called ListIncidenteFaces() before)
+// 判断每个顶点是否在边界，需先计算ListIncidenteFaces
 void Mesh::ListBoundaryVertices()
 {
 	vertexBoundary.clear();
@@ -303,6 +306,8 @@ void Mesh::ListBoundaryVertices()
 		// count how many times vertices in the first triangle ring are seen;
 		// usually they are seen two times each as the vertex in not at the boundary
 		// so there are two triangles (on the ring) containing same vertex
+		// 如果不在边界，在与该顶点相关的face中，除了当前点，faces中其它点应该均被看到两次
+		// 在边界的话，只能被看到一次
 		ASSERT(mapVerts.empty());
 		FOREACHPTR(pFaceIdx, vf) {
 			const Face& face = faces[*pFaceIdx];
@@ -556,6 +561,7 @@ void Mesh::GetAdjVertexFaces(VIndex idxVCenter, VIndex idxVAdj, FaceIdxArr& indi
 
 // fix non-manifold vertices and edges;
 // return the number of non-manifold issues found
+// 此处代码和老版相比改动很大，若在讲解时出现不懂，建议去网上查一下，或者结合老代码看一下
 unsigned Mesh::FixNonManifold(float magDisplacementDuplicateVertices, VertexIdxArr* duplicatedVertices)
 {
 	ASSERT(!vertices.empty() && !faces.empty());
@@ -1258,7 +1264,9 @@ bool Mesh::LoadPLY(const String& fileName)
 			}
 		} else
 		if (PLY::equal_strings(BasicPLY::elem_names[1], elem_name)) {
+			// load vertex indices and texture coordinates
 			ASSERT(faces.size() == (FIndex)elem_count);
+			// load vertex indices
 			BasicPLY::Face::InitLoadProps(ply, elem_count, faces, faceTexcoords, faceTexindices);
 			BasicPLY::Face face;
 			FOREACH(f, faces) {
@@ -1367,7 +1375,7 @@ bool Mesh::LoadOBJ(const String& fileName)
 		faceTexcoords.Swap(unnormFaceTexcoords);
 	}
 	return true;
-}
+}  // Load
 // import the mesh as a GLTF file
 bool Mesh::LoadGLTF(const String& fileName, bool bBinary)
 {
@@ -1589,6 +1597,8 @@ bool Mesh::SaveOBJ(const String& fileName) const
 			}
 			group.faces.push_back(f);
 		}
+
+		// store texture
 		ObjModel::MaterialLib::Material* pMaterial(model.GetMaterial(group.material_name));
 		ASSERT(pMaterial != NULL);
 		pMaterial->diffuse_map = texturesDiffuse[idxTexture];
@@ -1816,7 +1826,7 @@ bool Mesh::Save(const VertexArr& vertices, const String& fileName, bool bBinary)
 	ASSERT(ply.get_current_element_count() == (int)vertices.size());
 
 	return true;
-}
+}  // Save
 /*----------------------------------------------------------------*/
 
 
@@ -3038,6 +3048,7 @@ void Mesh::EnsureEdgeSize(float epsilonMin, float epsilonMax, float collapseRati
 
 // subdivide mesh faces if its projection area
 // is bigger than the given number of pixels
+// 如果投影面积比给定的阈值大，则细分该face
 void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 {
 	ASSERT(vertexFaces.size() == vertices.size());
@@ -3045,10 +3056,11 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 	// each face that needs to split, remember for each edge the new vertex index
 	// (each new vertex index corresponds to the edge opposed to the existing vertex index)
 	struct SplitFace {
-		VIndex idxVert[3];
+		VIndex idxVert[3];  // 记录每个face的边是否被分过，如果没有则为NO_VERT（边上没被插入新顶点），如果有则该值为新点的ID
 		bool bSplit;
 		enum {NO_VERT = (VIndex)-1};
 		inline SplitFace() : bSplit(false) { memset(idxVert, 0xFF, sizeof(VIndex)*3); }
+		// 找两个face共享的边，返回的是该边对应的顶点id
 		static VIndex FindSharedEdge(const Face& f, const Face& a) {
 			for (int i=0; i<2; ++i) {
 				const VIndex v(f[i]);
@@ -3059,10 +3071,10 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 			return 2;
 		}
 	};
-	typedef std::unordered_map<FIndex,SplitFace> FacetSplitMap;
+	typedef std::unordered_map<FIndex,SplitFace> FacetSplitMap;  // 存储face是否被细分
 
 	// used to find adjacent face
-	typedef Mesh::FacetCountMap FacetCountMap;
+	typedef Mesh::FacetCountMap FacetCountMap;  // 用于寻找邻域face
 
 	// for each image, compute the projection area of visible faces
 	FacetSplitMap mapSplits; mapSplits.reserve(faces.size());
@@ -3076,31 +3088,40 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 			continue;
 		// split face in four triangles
 		// by adding a new vertex at the middle of each edge
+		// 通过在面的三个边中点上各增加一个新点，将一个face分成四个三角face
 		faces.ReserveExtra(4);
 		Face& newface = faces.AddEmpty(); // defined by the three new vertices
 		const Face& face = faces[(FIndex)f];
 		SplitFace& split = mapSplits[(FIndex)f];
 		for (int i=0; i<3; ++i) {
 			// if the current edge was already split, used the existing vertex
+			// 如果该边被分过则用其点赋值给新face
 			if (split.idxVert[i] != SplitFace::NO_VERT) {
 				newface[i] = split.idxVert[i];
 				continue;
 			}
 			// create a new vertex at the middle of the current edge
 			// (current edge is the opposite edge to the current vertex index)
+			// 在当前边中点处建立新点，并记录每个边插入的新点id
 			split.idxVert[i] = newface[i] = vertices.size();
+			// 当前边是当前顶点i对应的边，故新点坐标是另外两个点的中点
 			vertices.emplace_back((vertices[face[(i+1)%3]]+vertices[face[(i+2)%3]])*0.5f);
 		}
 		// create the last three faces, defined by one old and two new vertices
+		// 增加剩余的三个面，由face的顶点和两个中点构成
 		for (int i=0; i<3; ++i) {
 			Face& nf = faces.AddEmpty();
 			nf[0] = face[i];
 			nf[1] = newface[(i+2)%3];
 			nf[2] = newface[(i+1)%3];
 		}
+		// 记录被细分
 		split.bSplit = true;
 		// find all three adjacent faces and inform them of the split
+		// 因为三个边被插入新点，共享边的邻域faces也需要被细分：各增加一个face
 		ASSERT(mapFaces.empty());
+		// 统计与face的三个顶点相关的face被访问到的次数
+		// 如果与顶点相关的face被访问两次说明它们与当前face共享一个边
 		for (int i=0; i<3; ++i) {
 			const Mesh::FaceIdxArr& vf = vertexFaces[face[i]];
 			FOREACHPTR(pFace, vf)
@@ -3108,28 +3129,33 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 		}
 		for (const auto& fc: mapFaces) {
 			ASSERT(fc.second.count <= 2 || (fc.second.count == 3 && fc.first == f));
+			// 只有被访问两次才说明该面与当前face的两个顶点重合
 			if (fc.second.count != 2)
 				continue;
 			if (fc.first < f && maxAreas[fc.first] > maxAreaTh) {
 				// already fully split, nothing to do
+				// 如果该相邻face的idx小于当前f,且面积大于阈值，则按照顺序肯定已经被细分过无需再分
 				ASSERT(mapSplits[fc.first].idxVert[SplitFace::FindSharedEdge(faces[fc.first], face)] == newface[SplitFace::FindSharedEdge(face, faces[fc.first])]);
 				continue;
 			}
-			const VIndex idxVertex(newface[SplitFace::FindSharedEdge(face, faces[fc.first])]);
+			const VIndex idxVertex(newface[SplitFace::FindSharedEdge(face, faces[fc.first])]);  // 共享边插入的新点id
 			VIndex& idxSplit = mapSplits[fc.first].idxVert[SplitFace::FindSharedEdge(faces[fc.first], face)];
 			ASSERT(idxSplit == SplitFace::NO_VERT || idxSplit == idxVertex);
-			idxSplit = idxVertex;
+			idxSplit = idxVertex;  // 记录该相邻face被细分的边
 		}
 		mapFaces.clear();
 	}
 
 	// add all faces partially split
+	// 前面记录了一些faces已经被细分的边，下面是逐个处理加入新的face
 	int indices[3];
 	for (const auto& s: mapSplits) {
 		const SplitFace& split = s.second;
+		// 如果已经被细分过（新的face已经添加）则跳过后续
 		if (split.bSplit)
 			continue;
 		int count(0);
+		// 记录被细分的边的个数
 		for (int i=0; i<3; ++i) {
 			if (split.idxVert[i] != SplitFace::NO_VERT)
 				indices[count++] = i;
@@ -3140,6 +3166,7 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 		switch (count) {
 		case 1: {
 			// one edge is split; create two triangles
+			// 只有一个边被分，则只生成两个三角面
 			const int i(indices[0]);
 			Face& nf0 = faces.AddEmpty();
 			nf0[0] = split.idxVert[i];
@@ -3152,6 +3179,7 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 			break; }
 		case 2: {
 			// two edges are split; create three triangles
+			// 只有两个边被分，则只生成三个三角面
 			const int i0(indices[0]);
 			const int i1(indices[1]);
 			Face& nf0 = faces.AddEmpty();
@@ -3195,6 +3223,7 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 		case 3: {
 			// all three edges are split; create four triangles
 			// create the new triangle in the middle
+			// 只有三个边被分，则只生成四个三角面
 			Face& newface = faces.AddEmpty();
 			newface[0] = split.idxVert[0];
 			newface[1] = split.idxVert[1];
@@ -3211,6 +3240,7 @@ void Mesh::Subdivide(const AreaArr& maxAreas, uint32_t maxArea)
 	}
 
 	// remove all faces that split
+	// 移除所有被细分的原始face
 	ASSERT(faces.size()-(faces.capacity()/3)/*initial size*/ > mapSplits.size());
 	for (const auto& s: mapSplits)
 		faces.RemoveAt(s.first);
@@ -4008,6 +4038,11 @@ void Mesh::ProjectOrtho(const Camera& camera, DepthMap& depthMap, Image8U3& imag
 		inline bool ProjectVertex(const Mesh::Vertex& pt, int v) {
 			return (ptc[v] = camera.TransformPointW2C(Cast<REAL>(pt))).z > 0 &&
 				depthMap.isInsideWithBorder<float,3>(pti[v] = camera.TransformPointOrthoC2I(ptc[v]));
+		}
+		inline bool CheckNormal(const Point3& /*faceCenter*/) {
+			// skip face if the (cos) angle between
+			// the face normal and the view direction is negative
+			return camera.Direction().dot(normalPlane) >= ZEROTOLERANCE<REAL>();
 		}
 		void Raster(const ImageRef& pt, const Point3f& bary) {
 			const Depth z(ComputeDepth(bary));

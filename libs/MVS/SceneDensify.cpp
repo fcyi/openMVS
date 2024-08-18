@@ -309,21 +309,25 @@ bool DepthMapsData::SelectViews(IIndexArr& images, IIndexArr& imagesMap, IIndexA
 // compute visibility for the reference image (the first image in "images")
 // and select the best views for reconstructing the depth-map;
 // extract also all 3D points seen by the reference image
+// Step 2_1 给reference image 选有效的邻域views
 bool DepthMapsData::SelectViews(DepthData& depthData)
 {
 	// find and sort valid neighbor views
 	const IIndex idxImage((IIndex)(&depthData-arrDepthData.Begin()));
 	ASSERT(depthData.neighbors.IsEmpty());
+	// 邻域选择
 	if (scene.images[idxImage].neighbors.empty() &&
 		!scene.SelectNeighborViews(idxImage, depthData.points, OPTDENSE::nMinViews, OPTDENSE::nMinViewsTrustPoint>1?OPTDENSE::nMinViewsTrustPoint:2, FD2R(OPTDENSE::fOptimAngle), OPTDENSE::nPointInsideROI))
 		return false;
 	depthData.neighbors.CopyOf(scene.images[idxImage].neighbors);
 
 	// remove invalid neighbor views
+	// 移除无效的邻域帧
 	const float fMinArea(OPTDENSE::fMinArea);
 	const float fMinScale(0.2f), fMaxScale(3.2f);
 	const float fMinAngle(FD2R(OPTDENSE::fMinAngle));
 	const float fMaxAngle(FD2R(OPTDENSE::fMaxAngle));
+	// 邻域滤波
 	if (!Scene::FilterNeighborViews(depthData.neighbors, fMinArea, fMinScale, fMaxScale, fMinAngle, fMaxAngle, OPTDENSE::nMaxViews)) {
 		DEBUG_EXTRA("error: reference image %3u has no good images in view", idxImage);
 		return false;
@@ -342,12 +346,23 @@ bool DepthMapsData::SelectViews(DepthData& depthData)
 // if 0, the reference depth-map is initialized from sparse point cloud,
 // and if -1, the depth-maps are not initialized
 // returns false if there are no good neighbors to estimate the depth-map
+/**
+ * @brief 初始化用来计算深度图的图像对，如果最佳邻域是有效值则直接初始化，如果是NO_ID则在Step 2_1中计算的众多邻域把score>fMinScore
+           存储到depthdata.images中
+ * 
+ * @param[in] depthData 单帧depth的数据结构，里面存储了用来计算的各种数据比如images（参考帧和邻域帧）等
+ * @param[in] idxNeighbor  最佳邻域的Id
+ * @param[in] numNeighbors 用来depthmap计算的邻域个数
+ * @return true 
+ * @return false 
+ */
 bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps)
 {
 	const IIndex idxImage((IIndex)(&depthData-arrDepthData.Begin()));
 	ASSERT(!depthData.neighbors.IsEmpty());
 
 	// set this image the first image in the array
+	// images中第一帧是reference image，之后的是邻域帧
 	depthData.images.Empty();
 	depthData.images.Reserve(depthData.neighbors.GetSize()+1);
 	depthData.images.AddEmpty();
@@ -357,10 +372,12 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		const ViewScore& neighbor = depthData.neighbors[idxNeighbor];
 		DepthData::ViewData& viewTrg = depthData.images.AddEmpty();
 		viewTrg.pImageData = &scene.images[neighbor.ID];
-		viewTrg.scale = neighbor.scale;
+		viewTrg.scale = neighbor.scale;  //scale 是之前计算的reference与neighbor的图像尺度因子
 		viewTrg.camera = viewTrg.pImageData->camera;
 		if (loadImages) {
+			// depth计算使用的都是灰度图
 			viewTrg.pImageData->image.toGray(viewTrg.image, cv::COLOR_BGR2GRAY, true);
+			// !!! resize neighbor帧 即将neighbor scale到与reference相同的尺度参考论文：Multi-View stereo for community photo collections(5.1 rescaling views)
 			if (DepthData::ViewData::ScaleImage(viewTrg.image, viewTrg.image, viewTrg.scale))
 				viewTrg.camera = viewTrg.pImageData->GetCamera(scene.platforms, viewTrg.image.size());
 		} else {
@@ -370,6 +387,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		DEBUG_EXTRA("Reference image %3u paired with image %3u", idxImage, neighbor.ID);
 	} else {
 		// initialize all neighbor views too (global reconstruction is used)
+		// 把neighbors中所有符合fMinScore选前numNeighbors个为邻域帧
 		const float fMinScore(MAXF(depthData.neighbors.First().score*OPTDENSE::fViewMinScoreRatio, OPTDENSE::fViewMinScore));
 		FOREACH(idx, depthData.neighbors) {
 			const ViewScore& neighbor = depthData.neighbors[idx];
@@ -406,6 +424,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 	}
 
 	// initialize reference image as well
+	// 初始化第一帧
 	DepthData::ViewData& viewRef = depthData.images.front();
 	viewRef.scale = 1;
 	viewRef.pImageData = &scene.images[idxImage];
@@ -453,6 +472,12 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 		}
 	} else if (loadDepthMaps == 0) {
 		// initialize depth and normal maps
+		// 初始化深度图和法向量图
+
+		// initialize the depth-map
+		// Step 3_2_1 PM:depth 初始化：先根据当前帧能看到的点云计算投影到depth上得到稀疏depth图，同时根据这些depth值计算最大最小值；
+		// 利用CGAL中的三角网格化函数对稀疏点网格划分，然后再将其栅格化投影对应像素对空缺位置的depth进行插值；
+		// 细节见InitDepthMap函数
 		if (OPTDENSE::nMinViewsTrustPoint < 2 || depthData.points.empty()) {
 			// compute depth range and initialize known depths, else random
 			const Image8U::Size size(viewRef.image.size());
@@ -464,6 +489,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 				depthData.dMax = 1e+2f;
 			} else {
 				// initialize with the sparse point-cloud
+				//初始化depth法1:根据当前帧的points投影到depth上并在以投影点为中心,在窗口大小为2*nPixelArea+1内设置与投影点相同的depth.
 				const int nPixelArea(2); // half windows size around a pixel to be initialize with the known depth
 				depthData.dMin = FLT_MAX;
 				depthData.dMax = 0;
@@ -472,8 +498,10 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 					const Point3 camX(viewRef.camera.TransformPointW2C(Cast<REAL>(X)));
 					const ImageRef x(ROUND2INT(viewRef.camera.TransformPointC2I(camX)));
 					const float d((float)camX.z);
+					// 计算以投影点为中心的窗口起始点
 					const ImageRef sx(MAXF(x.x-nPixelArea,0), MAXF(x.y-nPixelArea,0));
 					const ImageRef ex(MINF(x.x+nPixelArea,size.width-1), MINF(x.y+nPixelArea,size.height-1));
+					// 将这个窗口内的所有像素都设为与投影点相同的深度值
 					for (int y=sx.y; y<=ex.y; ++y) {
 						for (int x=sx.x; x<=ex.x; ++x) {
 							depthData.depthMap(y,x) = d;
@@ -485,12 +513,14 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 					if (depthData.dMax < d)
 						depthData.dMax = d;
 				}
+				// 略微扩大下深度范围
 				depthData.dMin *= 0.9f;
 				depthData.dMax *= 1.1f;
 			}
 		} else {
 			ASSERT(!depthData.points.empty());
 			// compute rough estimates using the sparse point-cloud
+			//初始化法2:投影到depth上的稀疏点进行三角网格划分,在每个三角网格内进行栅格化并根据三个顶点所在的平面进行插值.
 			InitDepthMap(depthData);
 		}
 	}
@@ -500,6 +530,7 @@ bool DepthMapsData::InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex n
 
 // roughly estimate depth and normal maps by triangulating the sparse point cloud
 // and interpolating normal and depth for all pixels
+// depth初始化，利用稀疏点投影到depth上，对这些点进行三角网格划分然后在每个三角面上插值得到每个像素的depth和法向量
 bool DepthMapsData::InitDepthMap(DepthData& depthData)
 {
 	TD_TIMER_STARTD();
@@ -512,6 +543,7 @@ bool DepthMapsData::InitDepthMap(DepthData& depthData)
 
 	#if TD_VERBOSE != TD_VERBOSE_OFF
 	// save rough depth map as image
+	// 保存深度图
 	if (g_nVerbosityLevel > 4) {
 		ExportDepthMap(ComposeDepthFilePath(image.GetID(), "init.png"), depthData.depthMap);
 		ExportNormalMap(ComposeDepthFilePath(image.GetID(), "init.normal.png"), depthData.normalMap);
@@ -526,13 +558,18 @@ bool DepthMapsData::InitDepthMap(DepthData& depthData)
 
 
 // initialize the confidence map (NCC score map) with the score of the current estimates
+// 利用之前初始化的depth计算每个像素的score
 void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 {
 	DepthEstimator& estimator = *((DepthEstimator*)arg);
 	IDX idx;
+	//Thread::safeInc(estimator.idxPixel):使用了InterlockedIncrement对idxPixel进行锁定防止多线程访问冲突
+    //InterlockedIncrement( &lReference );  // 对这个引用计数进行锁定并ADD 1 每调用一次加1
 	while ((idx=(IDX)Thread::safeInc(estimator.idxPixel)) < estimator.coords.GetSize()) {
 		const ImageRef& x = estimator.coords[idx];
+		// 判断能否构建patch，主要是剔除边界；在reference图像上计算patch 值
 		if (!estimator.PreparePixelPatch(x) || !estimator.FillPixelPatch()) {
+			// 失败就设为0
 			estimator.depthMap0(x) = 0;
 			estimator.normalMap0(x) = Normal::ZERO;
 			estimator.confMap0(x) = 2.f;
@@ -540,21 +577,27 @@ void* STCALL DepthMapsData::ScoreDepthMapTmp(void* arg)
 		}
 		Depth& depth = estimator.depthMap0(x);
 		Normal& normal = estimator.normalMap0(x);
+		// viewDir指相机原点到x0所在相机坐标
 		const Normal viewDir(Cast<float>(static_cast<const Point3&>(estimator.X0)));
 		if (!ISINSIDE(depth, estimator.dMin, estimator.dMax)) {
 			// init with random values
+			// 初始化
 			depth = estimator.RandomDepth(estimator.dMinSqr, estimator.dMaxSqr);
 			normal = estimator.RandomNormal(viewDir);
 		} else if (normal.dot(viewDir) >= 0) {
 			// replace invalid normal with random values
+			// 如果法线与view夹角小于90，则无效，因为这种情况下是看不到点的
 			normal = estimator.RandomNormal(viewDir);
 		}
+		// 利用当前初始深度图和normal计算匹配代价wncc,计算confidence
 		ASSERT(ISEQUAL(norm(normal), 1.f));
 		estimator.confMap0(x) = estimator.ScorePixel(depth, normal);
 	}
 	return NULL;
 }
+
 // run propagation and random refinement cycles
+// 对每个像素进行depth的邻域传播和随机优化
 void* STCALL DepthMapsData::EstimateDepthMapTmp(void* arg)
 {
 	DepthEstimator& estimator = *((DepthEstimator*)arg);
@@ -563,7 +606,9 @@ void* STCALL DepthMapsData::EstimateDepthMapTmp(void* arg)
 		estimator.ProcessPixel(idx);
 	return NULL;
 }
+
 // remove all estimates with too big score and invert confidence map
+// depth优化，主要是剔除score过大的点，
 void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 {
 	DepthEstimator& estimator = *((DepthEstimator*)arg);
@@ -576,15 +621,18 @@ void* STCALL DepthMapsData::EndDepthMapTmp(void* arg)
 		float& conf = estimator.confMap0(x);
 		// check if the score is good enough
 		// and that the cross-estimates is close enough to the current estimate
+		// 判断score是否足够好，conf越大越不好
 		if (depth <= 0 || conf >= OPTDENSE::fNCCThresholdKeep) {
+			// used if gap-interpolation is active
 			conf = 0;
 			depth = 0;
 			estimator.normalMap0(x) = Normal::ZERO;
 		} else {
 			#if 1
 			// converted ZNCC [0-2] score, where 0 is best, to [0-1] confidence, where 1 is best
+			// 将置信度invert，0-1 1是最好
 			conf = conf>=1.f ? 0.f : 1.f-conf;
-			#else
+			#else  //不考虑
 			#if 1
 			FOREACH(i, estimator.images)
 				estimator.scores[i] = ComputeAngle<REAL,float>(estimator.image0.camera.TransformPointI2W(Point3(x,depth)).ptr(), estimator.image0.camera.C.ptr(), estimator.images[i].view.camera.C.ptr());
@@ -652,6 +700,26 @@ DepthData DepthMapsData::ScaleDepthData(const DepthData& inputDeptData, float sc
 // In order to ensure some smoothness while locally estimating each pixel, a bonus is added to the NCC score if the estimate for this pixel is close to the estimates for the neighbor pixels.
 // Optionally, the occluded pixels can be detected by extending the described iterations to the target image and removing the estimates that do not have similar values in both views.
 //  - nGeometricIter: current geometric-consistent estimation iteration (-1 - normal patch-match)
+/**
+ * @brief depth计算,采用patchMatch方法 
+        原理细节主要是参考论文"Accurate Multiple View 3D Reconstruction Using Patch-Based Stereo for Large-Scale Scenes", S. Shen, 2013
+ *      代价计算分两种方式一种是上述论文里面的简单的直接使用NCC来作为匹配代价；
+		另一种是带权重的代价参考论文"PatchMatch Stereo - Stereo Matching with Slanted Support Windows"公式3
+ *		以NCC为评价标准，使用传播和随机优化来估计深度图
+
+ *      给定同一场景的两个视图，我们将重建深度图的视图记为“参考图像”，将另一个视图记为“目标图像”。
+ *      第一步：在可用的稀疏点之间插值初始化深度图；
+ *      第二步：传播优化：深度图从顶部/左侧传播到底部/右侧，并在接下来的每个步骤中传递相反的方向。
+        传播过程中，对于每个像素，如果邻域的NCC评分较好，首先将当前的深度估计替换为它的邻居深度值。
+        然后通过尝试对当前深度值做一个随机调整来细化重建的深度，并保留得分最高的那个，通常2-3次迭代就足够收敛了。
+		（对于每个像素，深度和法线是通过计算参考图像中的patch与目标图像中被包裹的patch之间的NCC分数来进行评分的，这由待估计的当前值定义的单应性矩阵来决定。
+		为了在局部估计每个像素时保证一定的平滑性，如果这个像素的估计接近于相邻像素的估计，那么NCC分数就会得到额外的奖励。
+		可选地，通过将描述的迭代扩展到目标图像并删除在两个视图中不具有相似值的估计，可以检测被遮挡的像素。）
+		第三步: 滤波
+ * @param[in] idxImage 
+ * @return true 
+ * @return false 
+ */
 bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 {
 	#ifdef _USE_CUDA
@@ -668,6 +736,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 	const unsigned iterEnd(nGeometricIter < 0 ? OPTDENSE::nEstimationIters : iterBegin+1);
 
 	// init threads
+	// 线程初始化
 	ASSERT(nMaxThreads > 0);
 	cList<DepthEstimator> estimators;
 	estimators.reserve(nMaxThreads);
@@ -676,6 +745,8 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		threads.resize(nMaxThreads-1); // current thread is also used
 	volatile Thread::safe_t idxPixel;
 
+	// initialize depth and normal maps
+	// 初始化深度图和法向量图的具体操作可以参见SceneDensify.cpp中的DepthMapsData::InitViews()方法
 	// Multi-Resolution : 
 	DepthData& fullResDepthData(arrDepthData[idxImage]);
 	const unsigned totalScaleNumber(nGeometricIter < 0 ? OPTDENSE::nSubResolutionLevels : 0u);
@@ -709,16 +780,22 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		depthData.confMap.create(size);
 
 		// init integral images and index to image-ref map for the reference data
+		// 初始化积分图和参考图的索引map
 		#if DENSE_NCC == DENSE_NCC_WEIGHTED
 		weightMap0.clear();
 		weightMap0.resize(size.area()-(size.width+1)*DepthEstimator::nSizeHalfWindow);
 		#else
+		//计算积分图
 		cv::integral(image.image, imageSum0, CV_64F);
 		#endif
 		if (prevDepthMapSize != size || OPTDENSE::nIgnoreMaskLabel >= 0) {
 			BitMatrix mask;
 			if (OPTDENSE::nIgnoreMaskLabel >= 0 && DepthEstimator::ImportIgnoreMask(*image.pImageData, depthData.depthMap.size(), (uint16_t)OPTDENSE::nIgnoreMaskLabel, mask))
 				depthData.ApplyIgnoreMask(mask);
+			//                        1 2 4 7
+			// 1 2 4 7 5 3 6 8 9 >    3 5 8
+			//                        6 9
+			// depth坐标索引转换成之字形，方便后续迭代直接使用
 			DepthEstimator::MapMatrix2ZigzagIdx(size, coords, mask, MAXF(64,(int)nMaxThreads*8));
 			#if 0 && !defined(_RELEASE)
 			// show pixels to be processed
@@ -732,11 +809,14 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		}
 
 		// initialize the reference confidence map (NCC score map) with the score of the current estimates
+		// Step 3_2_2 PM:score confidence初始化，预先计算reference帧每个像素的ncc相关计算
 		{
 			// create working threads
+			// 创建工作线程
 			idxPixel = -1;
 			ASSERT(estimators.empty());
 			while (estimators.size() < nMaxThreads) {
+				// estimators初始化
 				estimators.emplace_back(iterBegin, depthData, idxPixel,
 					#if DENSE_NCC == DENSE_NCC_WEIGHTED
 					weightMap0,
@@ -751,11 +831,13 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 				threads[i].start(ScoreDepthMapTmp, &estimators[i]);
 			ScoreDepthMapTmp(&estimators.back());
 			// wait for the working threads to close
+			// 等待线程关闭
 			FOREACHPTR(pThread, threads)
 				pThread->join();
 			estimators.clear();
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save rough depth map as image
+			// 保存深度图
 			if (g_nVerbosityLevel > 4 && nGeometricIter < 0) {
 				ExportDepthMap(ComposeDepthFilePath(image.GetID(), "rough.png"), depthData.depthMap);
 				ExportNormalMap(ComposeDepthFilePath(image.GetID(), "rough.normal.png"), depthData.normalMap);
@@ -765,8 +847,10 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 		}
 
 		// run propagation and random refinement cycles on the reference data
+		// Step 3_2_3 PM:depth迭代优化： 邻域传播和随机优化
 		for (unsigned iter=iterBegin; iter<iterEnd; ++iter) {
 			// create working threads
+			// 线程启动
 			idxPixel = -1;
 			ASSERT(estimators.empty());
 			while (estimators.size() < nMaxThreads) {
@@ -780,10 +864,12 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 				estimators.Last().lowResDepthMap = currentSizeResDepthMap;
 			}
 			ASSERT(estimators.size() == threads.size()+1);
+			// 启用多线程计算
 			FOREACH(i, threads)
 				threads[i].start(EstimateDepthMapTmp, &estimators[i]);
 			EstimateDepthMapTmp(&estimators.back());
 			// wait for the working threads to close
+			// 等待线程结束
 			FOREACHPTR(pThread, threads)
 				pThread->join();
 			estimators.clear();
@@ -809,6 +895,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 
 	DepthData& depthData(fullResDepthData);
 	// remove all estimates with too big score and invert confidence map
+	// Step 3_2_3 PM: 滤波，去除score大的点 invert 置信度图0-1 1是最优
 	{
 		const float fNCCThresholdKeep(OPTDENSE::fNCCThresholdKeep);
 		if (nGeometricIter < 0 && OPTDENSE::nEstimationGeometricIters)
@@ -846,6 +933,7 @@ bool DepthMapsData::EstimateDepthMap(IIndex idxImage, int nGeometricIter)
 
 
 // filter out small depth segments from the given depth map
+// 从给定的深度图中过滤出小的深度段
 bool DepthMapsData::RemoveSmallSegments(DepthData& depthData)
 {
 	const float fDepthDiffThreshold(OPTDENSE::fDepthDiffThreshold*0.7f);
@@ -857,6 +945,7 @@ bool DepthMapsData::RemoveSmallSegments(DepthData& depthData)
 	const ImageRef size(depthMap.size());
 
 	// allocate memory on heap for dynamic programming arrays
+	// 在堆上为动态编程数组分配内存
 	TImage<bool> done_map(size, false);
 	CAutoPtrArr<ImageRef> seg_list(new ImageRef[size.x*size.y]);
 	unsigned seg_list_count;
@@ -864,14 +953,17 @@ bool DepthMapsData::RemoveSmallSegments(DepthData& depthData)
 	ImageRef neighbor[4];
 
 	// for all pixels do
+	// 逐像素处理
 	for (int u=0; u<size.x; ++u) {
 		for (int v=0; v<size.y; ++v) {
 			// if the first pixel in this segment has been already processed => skip
+			// 如果这个段中的第一个像素已经被处理=>跳过
 			if (done_map(v,u))
 				continue;
 
 			// init segment list (add first element
 			// and set it to be the next element to check)
+			// 初始化 分割list
 			seg_list[0] = ImageRef(u,v);
 			seg_list_count = 1;
 			seg_list_curr  = 0;
@@ -879,36 +971,46 @@ bool DepthMapsData::RemoveSmallSegments(DepthData& depthData)
 			// add neighboring segments as long as there
 			// are none-processed pixels in the seg_list;
 			// none-processed means: seg_list_curr<seg_list_count
+			// 只要seg_list中有未处理的像素，就添加相邻的分割块
 			while (seg_list_curr < seg_list_count) {
 				// get address of current pixel in this segment
+				// 取当前像素在这个分割块中的地址
 				const ImageRef addr_curr(seg_list[seg_list_curr]);
 				const Depth& depth_curr = depthMap(addr_curr);
 
 				if (depth_curr>0) {
 					// fill list with neighbor positions
+					// 用邻域像素填充list
 					neighbor[0] = ImageRef(addr_curr.x-1, addr_curr.y  );
 					neighbor[1] = ImageRef(addr_curr.x+1, addr_curr.y  );
 					neighbor[2] = ImageRef(addr_curr.x  , addr_curr.y-1);
 					neighbor[3] = ImageRef(addr_curr.x  , addr_curr.y+1);
 
 					// for all neighbors do
+					// 处理每一个邻域
 					for (int i=0; i<4; ++i) {
 						// get neighbor pixel address
+						// 取邻域坐标
 						const ImageRef& addr_neighbor(neighbor[i]);
 						// check if neighbor is inside image
+						// 确认邻域是否在图像内
 						if (addr_neighbor.x>=0 && addr_neighbor.y>=0 && addr_neighbor.x<size.x && addr_neighbor.y<size.y) {
 							// check if neighbor has not been added yet
+							// 确认邻域是否已经被处理过
 							bool& done = done_map(addr_neighbor);
 							if (!done) {
 								// check if the neighbor is valid and similar to the current pixel
+								// 确认邻域是否属于当前分割块
 								// (belonging to the current segment)
 								const Depth& depth_neighbor = depthMap(addr_neighbor);
 								if (depth_neighbor>0 && IsDepthSimilar(depth_curr, depth_neighbor, fDepthDiffThreshold)) {
 									// add neighbor coordinates to segment list
+									// 如果属于则加到分割块的list中
 									seg_list[seg_list_count++] = addr_neighbor;
 									// set neighbor pixel in done_map to "done"
 									// (otherwise a pixel may be added 2 times to the list, as
 									//  neighbor of one pixel and as neighbor of another pixel)
+									// 标记邻域已被处理过
 									done = true;
 								}
 							}
@@ -917,15 +1019,19 @@ bool DepthMapsData::RemoveSmallSegments(DepthData& depthData)
 				}
 
 				// set current pixel in seg_list to "done"
+				// 在seg列表中设置当前像素为“已完成”
 				++seg_list_curr;
 
 				// set current pixel in done_map to "done"
+				// 标记当前像素已被处理过
 				done_map(addr_curr) = true;
 			} // end: while (seg_list_curr < seg_list_count)
 
 			// if segment NOT large enough => invalidate pixels
+			// 如果分割块大小不够大，就认为是无效的将其剔除
 			if (seg_list_count < speckle_size) {
 				// for all pixels in current segment invalidate pixels
+				// 把无效的像素深度都置为0
 				for (unsigned i=0; i<seg_list_count; ++i) {
 					depthMap(seg_list[i]) = 0;
 					if (!normalMap.empty()) normalMap(seg_list[i]) = Normal::ZERO;
@@ -940,6 +1046,7 @@ bool DepthMapsData::RemoveSmallSegments(DepthData& depthData)
 /*----------------------------------------------------------------*/
 
 // try to fill small gaps in the depth map
+// 填充小的洞
 bool DepthMapsData::GapInterpolation(DepthData& depthData)
 {
 	const float fDepthDiffThreshold(OPTDENSE::fDepthDiffThreshold*2.5f);
@@ -950,18 +1057,20 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 	ASSERT(!depthMap.empty());
 	const ImageRef size(depthMap.size());
 
-	// 1. Row-wise:
+	// 1. Row-wise: 处理行
 	// for each row do
 	for (int v=0; v<size.y; ++v) {
 		// init counter
 		unsigned count = 0;
 
-		// for each element of the row do
+		// for each element of the row do 处理每一行的每个像素
 		for (int u=0; u<size.x; ++u) {
 			// get depth of this location
+			// 取深度值
 			const Depth& depth = depthMap(v,u);
 
 			// if depth not valid => count and skip it
+			// 无效跳过，并记录
 			if (depth <= 0) {
 				++count;
 				continue;
@@ -970,12 +1079,15 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 				continue;
 
 			// check if speckle is small enough
+			// 判断洞是否足够小
 			// and value in range
 			if (count <= nIpolGapSize && (unsigned)u > count) {
 				// first value index for interpolation
+				// 第一个要插值的索引
 				int u_curr(u-count);
 				const int u_first(u_curr-1);
 				// compute mean depth
+				// 计算洞的两端深度的平均深度
 				const Depth& depthFirst = depthMap(v,u_first);
 				if (IsDepthSimilar(depthFirst, depth, fDepthDiffThreshold)) {
 					#if 0
@@ -986,6 +1098,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 					} while (++u_curr<u);						
 					#else
 					// interpolate values
+					// 线性插值
 					const Depth diff((depth-depthFirst)/(count+1));
 					Depth d(depthFirst);
 					const float c(confMap.empty() ? 0.f : MINF(confMap(v,u_first), confMap(v,u)));
@@ -1015,7 +1128,7 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 		}
 	}
 
-	// 2. Column-wise:
+	// 2. Column-wise: 处理每一列同上
 	// for each column do
 	for (int u=0; u<size.x; ++u) {
 
@@ -1086,11 +1199,14 @@ bool DepthMapsData::GapInterpolation(DepthData& depthData)
 
 
 // filter depth-map, one pixel at a time, using confidence based fusion or neighbor pixels
+// 逐像素滤波，利用邻域信息和置信度.如果adjust，则滤波后会修改原depth值（邻域投影当前得到depth如果与原深度相似则加和取平均代替原来depth）
+// 如果不adjust，则直接根据计算有效views如果足够多则保留原depth否则置为0
 bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idxNeighbors, bool bAdjust)
 {
 	TD_TIMER_STARTD();
 
 	// count valid neighbor depth-maps
+	// 判断depth的邻域是否足够后续滤波
 	ASSERT(depthDataRef.IsValid() && !depthDataRef.IsEmpty());
 	const IIndex N = idxNeighbors.GetSize();
 	ASSERT(OPTDENSE::nMinViewsFilter > 0 && scene.nCalibratedImages > 1);
@@ -1102,11 +1218,12 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 	}
 
 	// project all neighbor depth-maps to this image
+	// depthDataRef的所有邻域的depth和conf，投影到当前帧。
 	const DepthData::ViewData& imageRef = depthDataRef.images.First();
 	const Image8U::Size sizeRef(depthDataRef.depthMap.size());
 	const Camera& cameraRef = imageRef.camera;
-	DepthMapArr depthMaps(N);
-	ConfidenceMapArr confMaps(N);
+	DepthMapArr depthMaps(N);  // N个邻域投影在当前帧的深度图
+	ConfidenceMapArr confMaps(N);  // 同上置信度
 	FOREACH(n, depthMaps) {
 		DepthMap& depthMap = depthMaps[n];
 		depthMap.create(sizeRef);
@@ -1116,9 +1233,9 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 			confMap.create(sizeRef);
 			confMap.memset(0);
 		}
-		const IIndex idxView = depthDataRef.neighbors[idxNeighbors[(IIndex)n]].ID;
-		const DepthData& depthData = arrDepthData[idxView];
-		const Camera& camera = depthData.images.First().camera;
+		const IIndex idxView = depthDataRef.neighbors[idxNeighbors[(IIndex)n]].ID;  //邻域ID
+		const DepthData& depthData = arrDepthData[idxView];      //邻域depth相关数据
+		const Camera& camera = depthData.images.First().camera;  //邻域相机内外参数
 		const Image8U::Size size(depthData.depthMap.size());
 		for (int i=0; i<size.height; ++i) {
 			for (int j=0; j<size.width; ++j) {
@@ -1127,12 +1244,13 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 				if (depth == 0)
 					continue;
 				ASSERT(depth > 0);
-				const Point3 X(camera.TransformPointI2W(Point3(x.x,x.y,depth)));
-				const Point3 camX(cameraRef.TransformPointW2C(X));
+				const Point3 X(camera.TransformPointI2W(Point3(x.x,x.y,depth)));  //计算邻域在世界坐标系下的xyz坐标
+				const Point3 camX(cameraRef.TransformPointW2C(X));  //投影到当前帧ref的相机坐标系下
 				if (camX.z <= 0)
 					continue;
 				#if 0
 				// set depth on the rounded image projection only
+				// 只投影到取整像素
 				const ImageRef xRef(ROUND2INT(cameraRef.TransformPointC2I(camX)));
 				if (!depthMap.isInside(xRef))
 					continue;
@@ -1144,7 +1262,8 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 					confMap(xRef) = depthData.confMap(x);
 				#else
 				// set depth on the 4 pixels around the image projection
-				const Point2 imgX(cameraRef.TransformPointC2I(camX));
+				// 计算得到的像素坐标一般不一定是整数，所以上下取整取四个相邻像素得到四个投影坐标
+				const Point2 imgX(cameraRef.TransformPointC2I(camX));  // 投影到像素坐标
 				const ImageRef xRefs[4] = {
 					ImageRef(FLOOR2INT(imgX.x), FLOOR2INT(imgX.y)),
 					ImageRef(FLOOR2INT(imgX.x), CEIL2INT(imgX.y)),
@@ -1153,9 +1272,12 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 				};
 				for (int p=0; p<4; ++p) {
 					const ImageRef& xRef = xRefs[p];
+					// 判断是否在图像范围内
 					if (!depthMap.isInside(xRef))
 						continue;
 					Depth& depthRef(depthMap(xRef));
+					// 如果当前坐标已经被投影过且深度图比现在投影的深度值小则不再投影。
+					// 只选择靠相机比较近的深度（认为如果深度比当前大的是遮挡部分投影的）
 					if (depthRef != 0 && depthRef < (Depth)camX.z)
 						continue;
 					depthRef = (Depth)camX.z;
@@ -1180,6 +1302,7 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 	if (bAdjust) {
 		// average similar depths, and decrease confidence if depths do not agree
 		// (inspired by: "Real-Time Visibility-Based Fusion of Depth Maps", Merrell, 2007)
+		// 深度图调整
 		for (int i=0; i<sizeRef.height; ++i) {
 			for (int j=0; j<sizeRef.width; ++j) {
 				const ImageRef xRef(j,i);
@@ -1194,31 +1317,38 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 				++nProcessed;
 				#endif
 				// update best depth and confidence estimate with all estimates
+				// 更新最好的depth和置信度用邻域投影到当前帧的depth
 				float posConf(depthDataRef.confMap(xRef)), negConf(0);
 				Depth avgDepth(depth*posConf);
-				unsigned nPosViews(0), nNegViews(0);
+				unsigned nPosViews(0), nNegViews(0);  //有效深度的view个数，无效个数
 				unsigned n(N);
+				// 循环处理N个邻域
 				do {
-					const Depth d(depthMaps[--n](xRef));
+					const Depth d(depthMaps[--n](xRef));  //邻域投影的深度d
 					if (d == 0) {
+						// 如果加和小于最小views个数则直接认为depth不准把refer的对应depth踢掉设为0
 						if (nPosViews + nNegViews + n < nMinViews)
 							goto DiscardDepth;
 						continue;
 					}
 					ASSERT(d > 0);
+					// 判断refer的深度depth与d的差值是否小于阈值
 					if (IsDepthSimilar(depth, d, thDepthDiff)) {
 						// average similar depths
+						// 平均相似深度图
 						const float c(confMaps[n](xRef));
-						avgDepth += d*c;
+						avgDepth += d*c;  // 与置信度相乘类似带权重累加即为均值
 						posConf += c;
-						++nPosViews;
+						++nPosViews;  //有效像素加1
 					} else {
 						// penalize confidence
+						// 如果比当前大认为是遮挡
 						if (depth > d) {
 							// occlusion
 							negConf += confMaps[n](xRef);
 						} else {
 							// free-space violation
+							// 比d小，因为我们只信任靠近相机的深度值，所以还是取当前深度在邻域投影的值对应的置信度
 							const DepthData& depthData = arrDepthData[depthDataRef.neighbors[idxNeighbors[n]].ID];
 							const Camera& camera = depthData.images.First().camera;
 							const Point3 X(cameraRef.TransformPointI2W(Point3(xRef.x,xRef.y,depth)));
@@ -1229,17 +1359,19 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 							} else
 								negConf += confMaps[n](xRef);
 						}
-						++nNegViews;
+						++nNegViews;  // 无效的views加1
 					}
 				} while (n);
 				ASSERT(nPosViews+nNegViews >= nMinViews);
 				// if enough good views and positive confidence...
+				// 如果邻域足够多，置信度ok则认为是内点，更新depth
 				if (nPosViews >= nMinViewsAdjust && posConf > negConf && ISINSIDE(avgDepth/=posConf, depthDataRef.dMin, depthDataRef.dMax)) {
 					// consider this pixel an inlier
 					newDepthMap(xRef) = avgDepth;
 					newConfMap(xRef) = posConf - negConf;
 				} else {
 					// consider this pixel an outlier
+					// 否则设为0
 					DiscardDepth:
 					newDepthMap(xRef) = 0;
 					newConfMap(xRef) = 0;
@@ -1250,7 +1382,9 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 			}
 		}
 	} else {
+		// 如果不调整depth值则直接根据
 		// remove depth if it does not agree with enough neighbors
+		// 如果邻域与当前depth相似有一定的数量则保留否则剔除
 		const float thDepthDiffStrict(OPTDENSE::fDepthDiffThreshold*0.8f);
 		const unsigned nMinGoodViewsProc(75), nMinGoodViewsDeltaProc(65);
 		const unsigned nDeltas(4);
@@ -1270,6 +1404,7 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 				++nProcessed;
 				#endif
 				// check if very similar with the neighbors projected to this pixel
+				// 判断邻域投影到当前像素的深度是否与原深度相似
 				{
 					unsigned nGoodViews(0);
 					unsigned nViews(0);
@@ -1278,6 +1413,7 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 						const Depth d(depthMaps[--n](xRef));
 						if (d > 0) {
 							// valid view
+							// 如果深度差值小于阈值则有效
 							++nViews;
 							if (IsDepthSimilar(depth, d, thDepthDiffStrict)) {
 								// agrees with this neighbor
@@ -1285,6 +1421,7 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 							}
 						}
 					} while (n);
+					// 如果有效view小于最小views或者小于最小goodview则直接丢弃
 					if (nGoodViews < nMinViews || nGoodViews < nViews*nMinGoodViewsProc/100) {
 						#if TD_VERBOSE != TD_VERBOSE_OFF
 						++nDiscarded;
@@ -1295,6 +1432,7 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 					}
 				}
 				// check if similar with the neighbors projected around this pixel
+				// 判断投影到当前像素的邻域的depth是否与原depth相似
 				{
 					unsigned nGoodViews(0);
 					unsigned nViews(0);
@@ -1308,6 +1446,7 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 								++nViews;
 								if (IsDepthSimilar(depth, d, thDepthDiff)) {
 									// agrees with this neighbor
+									// 相似加1
 									++nGoodViews;
 								}
 							}
@@ -1323,6 +1462,7 @@ bool DepthMapsData::FilterDepthMap(DepthData& depthDataRef, const IIndexArr& idx
 					}
 				}
 				// enough good views, keep it
+				// 有足够多的views则直接保留原来的depth
 				newDepthMap(xRef) = depth;
 				newConfMap(xRef) = depthDataRef.confMap(xRef);
 			}
@@ -1408,6 +1548,8 @@ void DepthMapsData::MergeDepthMaps(PointCloud& pointcloud, bool bEstimateColor, 
 // fuse all valid depth-maps in the same 3D point cloud;
 // join points very likely to represent the same 3D point and
 // filter out points blocking the view
+// depth融合：将所有有效depth融合为一个点云并带有views信息
+// 参考Accurate Multiple View 3D Reconstruction Using Patch-Based Stereo for Large-Scale Scenes D部分
 void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, bool bEstimateNormal)
 {
 	TD_TIMER_STARTD();
@@ -1428,6 +1570,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	typedef SEACAVE::cList<ProjArr,const ProjArr&,1,65536> ProjsArr;
 
 	// find best connected images
+	// 找具有有效depth的帧 并记录存储到connection中记录ID和邻域个数
 	IndexScoreArr connections(scene.images.size());
 	size_t nPointsEstimate(0);
 	bool bNormalMap(true);
@@ -1444,11 +1587,13 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	#endif
 		IndexScore& connection = connections[idxImage];
 		DepthData& depthData = arrDepthData[idxImage];
+		// 判断深度图是否有效
 		if (!depthData.IsValid()) {
 			connection.idx = NO_ID;
 			connection.score = 0;
 			continue;
 		}
+		// 深度图加载
 		const String fileName(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
 		if (depthData.IncRef(fileName) == 0) {
 			#ifdef DENSE_USE_OPENMP
@@ -1478,6 +1623,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 		#pragma omp critical
 		#endif
 		{
+		// 统计可能得到的点云个数，简单乘以系数0.5*0.3大概估计有效点云的个数
 		nPointsEstimate += ROUND2INT(depthData.depthMap.area()*(0.5f/*valid*/*0.3f/*new*/));
 		if (depthData.normalMap.empty())
 			bNormalMap = false;
@@ -1487,6 +1633,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	if (bAbort)
 		return;
 	#endif
+	// 根据score进行排序升序，处理邻域最多的帧
 	connections.Sort();
 	while (!connections.empty() && connections.back().score <= 0)
 		connections.pop_back();
@@ -1496,30 +1643,33 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 	}
 
 	// fuse all depth-maps, processing the best connected images first
-	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, scene.images.size()));
-	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));
+	// 融合所有depth，首先处理连接最好的image（邻域最多）
+	const unsigned nMinViewsFuse(MINF(OPTDENSE::nMinViewsFuse, scene.images.size()));  // 最小融合帧
+	const float normalError(COS(FD2R(OPTDENSE::fNormalDiffThreshold)));  //法线误差
 	CLISTDEF0(Depth*) invalidDepths(0, 32);
 	size_t nDepths(0);
 	typedef TImage<cuint32_t> DepthIndex;
 	typedef cList<DepthIndex> DepthIndexArr;
-	DepthIndexArr arrDepthIdx(scene.images.size());
-	ProjsArr projs(0, nPointsEstimate);
+	DepthIndexArr arrDepthIdx(scene.images.size());  // 用来记录depth是否融合，如果已经融合则记录融合对应的point的id否则No_ID
+	ProjsArr projs(0, nPointsEstimate);  // 存放的是point在每个view中的投影坐标
 	if (bEstimateNormal && !bNormalMap)
 		bEstimateNormal = false;
-	pointcloud.points.reserve(nPointsEstimate);
-	pointcloud.pointViews.reserve(nPointsEstimate);
-	pointcloud.pointWeights.reserve(nPointsEstimate);
+	pointcloud.points.reserve(nPointsEstimate);  // 存放顶点坐标
+	pointcloud.pointViews.reserve(nPointsEstimate);  // 每个点的views id(能看到该点的image)
+	pointcloud.pointWeights.reserve(nPointsEstimate);  // 每个点的view的权重
 	if (bEstimateColor)
 		pointcloud.colors.reserve(nPointsEstimate);
 	if (bEstimateNormal)
 		pointcloud.normals.reserve(nPointsEstimate);
 	Util::Progress progress(_T("Fused depth-maps"), connections.size());
 	GET_LOGCONSOLE().Pause();
+	// 逐帧融合
 	for (const IndexScore& connection: connections) {
 		TD_TIMER_STARTD();
 		const uint32_t idxImage(connection.idx);
 		const DepthData& depthData(arrDepthData[idxImage]);
 		ASSERT(!depthData.images.empty() && !depthData.neighbors.empty());
+		// 初始化邻域arrDepthIdx
 		for (const ViewScore& neighbor: depthData.neighbors) {
 			DepthIndex& depthIdxs = arrDepthIdx[neighbor.ID];
 			if (!depthIdxs.empty())
@@ -1531,15 +1681,17 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 			depthIdxs.memset((uint8_t)NO_ID);
 		}
 		ASSERT(!depthData.IsEmpty());
+		// 初始化当前帧depthIdxs
 		const Image8U::Size sizeMap(depthData.depthMap.size());
 		const Image& imageData = *depthData.images.front().pImageData;
 		ASSERT(&imageData-scene.images.data() == idxImage);
-		DepthIndex& depthIdxs = arrDepthIdx[idxImage];
+		DepthIndex& depthIdxs = arrDepthIdx[idxImage];  // 用来记录depth是否已经被融合过或被剔除避免重复计算
 		if (depthIdxs.empty()) {
 			depthIdxs.create(Image8U::Size(imageData.width, imageData.height));
 			depthIdxs.memset((uint8_t)NO_ID);
 		}
-		const size_t nNumPointsPrev(pointcloud.points.size());
+		const size_t nNumPointsPrev(pointcloud.points.size());  //不参与计算log用的
+		// 逐点融合depth
 		for (int i=0; i<sizeMap.height; ++i) {
 			for (int j=0; j<sizeMap.width; ++j) {
 				const ImageRef x(j,i);
@@ -1549,16 +1701,24 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				++nDepths;
 				ASSERT(ISINSIDE(depth, depthData.dMin, depthData.dMax));
 				uint32_t& idxPoint = depthIdxs(x);
+				// 如果当前点深度已经被处理过，则跳过
 				if (idxPoint != NO_ID)
 					continue;
 				// create the corresponding 3D point
+				// 计算新插入三维点的id
 				idxPoint = (uint32_t)pointcloud.points.size();
 				PointCloud::Point& point = pointcloud.points.emplace_back();
+				// uv d转世界坐标系下的xyz
 				point = imageData.camera.TransformPointI2W(Point3(Point2f(x),depth));
+				// 当前点的views计算
 				PointCloud::ViewArr& views = pointcloud.pointViews.emplace_back();
+				// 首先插入当前帧id,这个肯定是能看到的view，后续view从idxImage的邻域中选择
 				views.emplace_back(idxImage);
+				// 计算插入的view的权重
 				PointCloud::WeightArr& weights = pointcloud.pointWeights.emplace_back();
+				// 将x的置信度转weight
 				REAL confidence(weights.emplace_back(Conf2Weight(depthData.confMap.empty() ? 1.f : depthData.confMap(x),depth)));
+				// 把uv坐标存入projs
 				ProjArr& pointProjs = projs.emplace_back();
 				pointProjs.emplace_back(Proj(x));
 				const PointCloud::Normal normal(bNormalMap ? Cast<Normal::Type>(imageData.camera.R.t()*Cast<REAL>(depthData.normalMap(x))) : Normal(0,0,-1));
@@ -1567,16 +1727,20 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 				Point3 X(point*confidence);
 				Pixel32F C(Cast<float>(imageData.image(x))*confidence);
 				PointCloud::Normal N(normal*confidence);
-				invalidDepths.clear();
+				invalidDepths.clear();  //记录无效depth
 				for (const ViewScore& neighbor: depthData.neighbors) {
 					const IIndex idxImageB(neighbor.ID);
+					// 邻域depth
 					DepthData& depthDataB = arrDepthData[idxImageB];
 					if (depthDataB.IsEmpty())
 						continue;
+					// 邻域image
 					const Image& imageDataB = scene.images[idxImageB];
+					// 将point投影到邻域idxImageB中
 					const Point3f pt(imageDataB.camera.ProjectPointP3(point));
 					if (pt.z <= 0)
 						continue;
+					// point投影到邻域帧得到像素坐标xB
 					const ImageRef xB(ROUND2INT(pt.x/pt.z), ROUND2INT(pt.y/pt.z));
 					DepthMap& depthMapB = depthDataB.depthMap;
 					if (!depthMapB.isInside(xB))
@@ -1585,8 +1749,10 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 					if (depthB == 0)
 						continue;
 					uint32_t& idxPointB = arrDepthIdx[idxImageB](xB);
+					// 如果xB像素已经被融合过则跳过
 					if (idxPointB != NO_ID)
 						continue;
+					// 如果point投影到邻域的depth（pt/z）比邻域本身的depthB相似且法线相似，则把邻域的view信息插入point的views
 					if (IsDepthSimilar(pt.z, depthB, OPTDENSE::fDepthDiffThreshold)) {
 						// check if normals agree
 						const PointCloud::Normal normalB(bNormalMap ? Cast<Normal::Type>(imageDataB.camera.R.t()*Cast<REAL>(depthDataB.normalMap(xB))) : Normal(0,0,-1));
@@ -1598,6 +1764,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 							const IIndex idx(views.InsertSort(idxImageB));
 							weights.InsertAt(idx, confidenceB);
 							pointProjs.InsertAt(idx, Proj(xB));
+							// 记录depth对应的融合后的point的id
 							idxPointB = idxPoint;
 							X += imageDataB.camera.TransformPointI2W(Point3(Point2f(xB),depthB))*REAL(confidenceB);
 							if (bEstimateColor)
@@ -1608,11 +1775,13 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 							continue;
 						}
 					}
+					// 如果比邻域本身深度值小，则邻域深度是被遮挡的，则丢弃depthB
 					if (pt.z < depthB) {
 						// discard depth
 						invalidDepths.emplace_back(&depthB);
 					}
 				}
+				// 如果点的总的views小于最小view则剔除原先插入的point及相关参数
 				if (views.size() < nMinViewsFuse) {
 					// remove point
 					FOREACH(v, views) {
@@ -1627,6 +1796,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 					pointcloud.points.pop_back();
 				} else {
 					// this point is valid, store it
+					// 点是有效则存储
 					const REAL nrm(REAL(1)/confidence);
 					point = X*nrm;
 					ASSERT(ISFINITE(point));
@@ -1650,9 +1820,10 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 
 	DEBUG_EXTRA("Depth-maps fused and filtered: %u depth-maps, %u depths, %u points (%d%%%%) (%s)",
 		connections.size(), nDepths, pointcloud.points.size(), ROUND2INT((100.f*pointcloud.points.size())/nDepths), TD_TIMER_GET_FMT().c_str());
-
+	// 法线计算可选 后续计算不需要
 	if (bEstimateNormal && !pointcloud.points.empty() && pointcloud.normals.empty()) {
 		// estimate normal also if requested (quite expensive if normal-maps not available)
+		// 计算法线，如果没有必要就不用计算因为比较费时
 		TD_TIMER_STARTD();
 		pointcloud.normals.resize(pointcloud.points.size());
 		const int64_t nPoints((int64_t)pointcloud.points.size());
@@ -1673,12 +1844,14 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 			}
 			const DepthData& depthData(arrDepthData[pointcloud.pointViews[i][idxView]]);
 			ASSERT(depthData.IsValid() && !depthData.IsEmpty());
+			// 法线计算
 			depthData.GetNormal(projs[i][idxView].GetCoord(), pointcloud.normals[i]);
 		}
 		DEBUG_EXTRA("Normals estimated for the dense point-cloud: %u normals (%s)", pointcloud.GetSize(), TD_TIMER_GET_FMT().c_str());
 	}
 
 	// release all depth-maps
+	// 内存释放，释放所有的depth
 	for (DepthData& depthData: arrDepthData)
 		if (depthData.IsValid())
 			depthData.DecRef();
@@ -1688,7 +1861,7 @@ void DepthMapsData::FuseDepthMaps(PointCloud& pointcloud, bool bEstimateColor, b
 
 
 // S T R U C T S ///////////////////////////////////////////////////
-
+// 法向量计算，启动多线程
 DenseDepthMapData::DenseDepthMapData(Scene& _scene, int _nFusionMode)
 	: scene(_scene), depthMaps(_scene), idxImage(0), sem(1), nEstimationGeometricIter(-1), nFusionMode(_nFusionMode)
 {
@@ -1698,6 +1871,8 @@ DenseDepthMapData::DenseDepthMapData(Scene& _scene, int _nFusionMode)
 			OPTDENSE::nOptimize = 0;
 	}
 }
+
+// 析构 线程释放
 DenseDepthMapData::~DenseDepthMapData()
 {
 	if (nFusionMode < 0)
@@ -1718,18 +1893,29 @@ void DenseDepthMapData::SignalCompleteDepthmapFilter()
 
 static void* DenseReconstructionEstimateTmp(void*);
 static void* DenseReconstructionFilterTmp(void*);
-
+/**
+ * @brief 深度计算
+ * 
+ * @param[in] nFusionMode   控制参数：-1采用SGM/tSGM计算，只输出视差图 -2 计算加融合视差图 0是深度图计算和融合 1采用patchMatch方式 只输出深度图
+ * <0是用SGM计算视差的方式计算深度，>=0用PatchMatch方式计算深度
+ * @return true  计算成功
+ * @return false 深度图计算失败
+ */
 bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderROI)
 {
 	DenseDepthMapData data(*this, nFusionMode);
 
 	// estimate depth-maps
+	// depth map fusion mode (-2 - fuse disparity-maps, -1 - export disparity-maps only, 0 - depth-maps & fusion, 1 - export depth-maps only)
+	// Step 1 深度图计算两种方式：patchMatch nFusionMode=1；SGM/tSGM nFusionMode=-1 通过nFusionMode控制可以通过这个参数设置对
+	// 这两种算法进行效果性能对比
 	if (!ComputeDepthMaps(data))
 		return false;
 	if (ABS(nFusionMode) == 1)
 		return true;
 
 	// fuse all depth-maps
+	// Step 2 将所有depth融合为一个带views信息的点云。每个点记录所有能看到的view的ID信息
 	pointcloud.Release();
 	if (OPTDENSE::nMinViewsFuse < 2) {
 		// merge depth-maps
@@ -1759,7 +1945,7 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 		VERBOSE("Dense point-cloud composed of:\n\t%u points with 1- views\n\t%u points with 2 views\n\t%u points with 3+ views", nPoints1m, nPoints2, nPoints3p);
 	}
 	#endif
-
+	// Step 3，4 点云颜色和法线计算（不建议，耗时）
 	if (!pointcloud.IsEmpty()) {
 		if (bCrop2ROI && IsBounded()) {
 			TD_TIMER_START();
@@ -1790,6 +1976,14 @@ bool Scene::DenseReconstruction(int nFusionMode, bool bCrop2ROI, float fBorderRO
 
 // do first half of dense reconstruction: depth map computation
 // results are saved to "data"
+// 稠密重建的第一半：计算结果保存在data中
+/**
+ * @brief 深度图计算patch/sgm,tsgm
+ * 
+ * @param[in/out] data 存储深度计算需要的数据和计算结果：深度图
+ * @return true 
+ * @return false 
+ */
 bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 {
 	// compute point-cloud from the existing mesh
@@ -1806,9 +2000,11 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 
 	{
 	// maps global view indices to our list of views to be processed
+	// view在所有图像中的索引与要处理的图像list中索引对应关系。
 	IIndexArr imagesMap;
 
 	// prepare images for dense reconstruction (load if needed)
+	// Step 1 数据准备：load 图像，对图像进行筛选去除无效图像,并根据传入的参数nResolutionLeval对load的图像做resize,对应相机参数做同样调整。
 	{
 		TD_TIMER_START();
 		data.images.Reserve(images.GetSize());
@@ -1825,7 +2021,9 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		FOREACH(idxImage, images) {
 		#endif
 			// skip invalid, uncalibrated or discarded images
+			// 跳过无效的，未标定的 或被丢弃的图像
 			Image& imageData = images[idxImage];
+			// isvalid 判断imageData的poseID是否等于NO_ID（无效）。我们也可以在外部传入数据时如果有些帧不想参与计算可以设置其为NO_ID
 			if (!imageData.IsValid()) {
 				#ifdef DENSE_USE_OPENMP
 				#pragma omp critical
@@ -1834,6 +2032,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				continue;
 			}
 			// map image index
+			// 计算图像的map
 			#ifdef DENSE_USE_OPENMP
 			#pragma omp critical
 			#endif
@@ -1842,8 +2041,12 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				data.images.Insert(idxImage);
 			}
 			// reload image at the appropriate resolution
+			//最大分辨率计算方式：imagesize=max(width,height), nMaxResolution=imagesize/2^nResolutionLevel
+			//                  if(nMaxResolution<OPTDENSE::nMinResolution),从level为0开始找到最开始大于OPTDENSE::nMinResolution的值作为nMaxResolution;
+			//                  最后 nMaxResolution=min(nMaxResolution,OPTDENSE::nMaxResolution)
 			unsigned nResolutionLevel(OPTDENSE::nResolutionLevel);
 			const unsigned nMaxResolution(imageData.RecomputeMaxResolution(nResolutionLevel, OPTDENSE::nMinResolution, OPTDENSE::nMaxResolution));
+			// 根据计算的分辨率对图像进行resize
 			if (!imageData.ReloadImage(nMaxResolution)) {
 				#ifdef DENSE_USE_OPENMP
 				bAbort = true;
@@ -1853,6 +2056,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				return false;
 				#endif
 			}
+			//根据resize的图像对相机内参做同样调整
 			imageData.UpdateCamera(platforms);
 			// print image camera
 			DEBUG_ULTIMATE("K%d = \n%s", idxImage, cvMat2String(imageData.camera.K).c_str());
@@ -1871,9 +2075,11 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	}
 
 	// select images to be used for dense reconstruction
+	// Step 2 给每帧图像选择一个最佳参考帧用来计算depth。主要是利用每帧对应的points和帧间夹角信息来筛选邻域帧。
 	{
 		TD_TIMER_START();
 		// for each image, find all useful neighbor views
+		// 给每一帧图像找到所有的邻域帧
 		IIndexArr invalidIDs;
 		#ifdef DENSE_USE_OPENMP
 		#pragma omp parallel for shared(data, invalidIDs)
@@ -1885,6 +2091,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			const IIndex idxImage(data.images[idx]);
 			ASSERT(imagesMap[idxImage] != NO_ID);
 			DepthData& depthData(data.depthMaps.arrDepthData[idxImage]);
+			// 如果没有选到足够的邻域就将该帧设为无效不进行depth计算。具体选帧算法见scene.cpp中的SelectNeighborViews
 			if (!data.depthMaps.SelectViews(depthData)) {
 				#ifdef DENSE_USE_OPENMP
 				#pragma omp critical
@@ -1892,6 +2099,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				invalidIDs.InsertSort(idx);
 			}
 		}
+		// 无效帧移除
 		RFOREACH(i, invalidIDs) {
 			const IIndex idx(invalidIDs[i]);
 			imagesMap[data.images.Last()] = idx;
@@ -1899,6 +2107,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			data.images.RemoveAt(idx);
 		}
 		// globally select a target view for each reference image
+		// 从邻域帧中选择最佳帧用来深度恢复，具体见当前cpp的SelectViews函数
 		if (OPTDENSE::nNumViews == 1 && !data.depthMaps.SelectViews(data.images, imagesMap, data.neighborsMap)) {
 			VERBOSE("error: no valid images to be dense reconstructed");
 			return false;
@@ -1920,6 +2129,8 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	#endif // _USE_CUDA
 
 	// initialize the queue of images to be processed
+	// Step 3 深度计算，分多线程和单线程，主要是通过事件队列实现整个 working 流程。
+	// 事件队列，多线程
 	const int nOptimize(OPTDENSE::nOptimize);
 	if (OPTDENSE::nEstimationGeometricIters && data.nFusionMode >= 0)
 		OPTDENSE::nOptimize = 0;
@@ -1927,10 +2138,13 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 	ASSERT(data.events.IsEmpty());
 	data.events.AddEvent(new EVTProcessImage(0));
 	// start working threads
+	// 启动工作线程
 	data.progress = new Util::Progress("Estimated depth-maps", data.images.GetSize());
 	GET_LOGCONSOLE().Pause();
 	if (nMaxThreads > 1) {
 		// multi-thread execution
+		//? 为什么depth计算只用两个线程
+		//? 可能是因为当前帧计算的depth需要传播给邻域帧做初始化帧之间是有关联性的。
 		cList<SEACAVE::Thread> threads(2);
 		FOREACHPTR(pThread, threads)
 			pThread->start(DenseReconstructionEstimateTmp, (void*)&data);
@@ -1938,6 +2152,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 			pThread->join();
 	} else {
 		// single-thread execution
+		// 单线程计算，如果想调试可以设线程数为1使用该函数
 		DenseReconstructionEstimate((void*)&data);
 	}
 	GET_LOGCONSOLE().Play();
@@ -1991,6 +2206,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		data.nEstimationGeometricIter = -1;
 	}
 
+	// Step 4 深度图优化：主要是对depth进行滤波（帧间滤波）去噪填充一些孔洞
 	if ((OPTDENSE::nOptimize & OPTDENSE::ADJUST_FILTER) != 0) {
 		// initialize the queue of depth-maps to be filtered
 		data.sem.Clear();
@@ -1999,10 +2215,12 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 		FOREACH(i, data.images)
 			data.events.AddEvent(new EVTFilterDepthMap(i));
 		// start working threads
+		// 线程启动
 		data.progress = new Util::Progress("Filtered depth-maps", data.images.GetSize());
 		GET_LOGCONSOLE().Pause();
 		if (nMaxThreads > 1) {
 			// multi-thread execution
+			// 多线程
 			cList<SEACAVE::Thread> threads(MINF(nMaxThreads, (unsigned)data.images.GetSize()));
 			FOREACHPTR(pThread, threads)
 				pThread->start(DenseReconstructionFilterTmp, (void*)&data);
@@ -2010,6 +2228,7 @@ bool Scene::ComputeDepthMaps(DenseDepthMapData& data)
 				pThread->join();
 		} else {
 			// single-thread execution
+			// 单线程
 			DenseReconstructionFilter((void*)&data);
 		}
 		GET_LOGCONSOLE().Play();
@@ -2028,33 +2247,44 @@ void* DenseReconstructionEstimateTmp(void* arg) {
 }
 
 // initialize the dense reconstruction with the sparse point cloud
+/**
+ * @brief 深度图计算的主流程各个环节线程启动，包括depth初始化：主要是通过稀疏点进行插值优化 depth计算 depth优化
+ * 
+ * @param[in/out] pData 输入输出数据，所有深度计算相关数据
+ */
 void Scene::DenseReconstructionEstimate(void* pData)
 {
 	DenseDepthMapData& data = *((DenseDepthMapData*)pData);
 	while (true) {
 		CAutoPtr<Event> evt(data.events.GetEvent());
 		switch (evt->GetID()) {
+		// Step 3_1 depth data 初始化
 		case EVT_PROCESSIMAGE: {
 			const EVTProcessImage& evtImage = *((EVTProcessImage*)(Event*)evt);
 			if (evtImage.idxImage >= data.images.size()) {
 				if (nMaxThreads > 1) {
 					// close working threads
+					// idxImage超过图像总数，说明所有计算已经完成，线程关闭
 					data.events.AddEvent(new EVTClose);
 				}
 				return;
 			}
 			// select views to reconstruct the depth-map for this image
+			// 为当前帧选择邻域帧来计算深度图
 			const IIndex idx = data.images[evtImage.idxImage];
 			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
 			const bool depthmapComputed(data.nFusionMode < 0 || (data.nFusionMode >= 0 && data.nEstimationGeometricIter < 0 && File::access(ComposeDepthFilePath(data.scene.images[idx].ID, "dmap"))));
 			// initialize images pair: reference image and the best neighbor view
 			ASSERT(data.neighborsMap.IsEmpty() || data.neighborsMap[evtImage.idxImage] != NO_ID);
+			//初始化用来计算深度图的图像对，如果最佳邻域为空，则从neighbors中根据score选取不超过nNumViews neighbor views
 			if (!data.depthMaps.InitViews(depthData, data.neighborsMap.IsEmpty()?NO_ID:data.neighborsMap[evtImage.idxImage], OPTDENSE::nNumViews, !depthmapComputed, depthmapComputed ? -1 : (data.nEstimationGeometricIter >= 0 ? 1 : 0))) {
 				// process next image
+				// 如果当前帧没有找到邻域，则无法计算深度，直接跳过处理下一帧图像（safeInc 每次调用都会对data.idxImage加1）
 				data.events.AddEvent(new EVTProcessImage((IIndex)Thread::safeInc(data.idxImage)));
 				break;
 			}
 			// try to load already compute depth-map for this image
+			// 尝试加载当前帧的深度图，如果有就不用再计算，直接进入优化环节
 			if (depthmapComputed && data.nFusionMode >= 0) {
 				if (OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) {
 					if (!depthData.Load(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"))) {
@@ -2062,34 +2292,44 @@ void Scene::DenseReconstructionEstimate(void* pData)
 						exit(EXIT_FAILURE);
 					}
 					// optimize depth-map
+					// 优化深度图
 					data.events.AddEventFirst(new EVTOptimizeDepthMap(evtImage.idxImage));
 				}
 				// process next image
+				// 如果当前深度不需要优化，则开始处理下一帧图像
 				data.events.AddEvent(new EVTProcessImage((uint32_t)Thread::safeInc(data.idxImage)));
 			} else {
 				// estimate depth-map
+				// 计算深度图
 				data.events.AddEventFirst(new EVTEstimateDepthMap(evtImage.idxImage));
 			}
 			break; }
-
+		// Step 3_2 depth 计算:用两种算法实现,一种是基于patchMatch计算深度图实现（主要参考Accurate Multiple View 3D Reconstruction Using Patch-Based Stereo for Large-Scale Scenes）
+		// 一种是基于SGM计算视差图实现（参考Accurate and Efficient Stereo Processing by Semi-Global Matching and Mutual Information）
 		case EVT_ESTIMATEDEPTHMAP: {
 			const EVTEstimateDepthMap& evtImage = *((EVTEstimateDepthMap*)(Event*)evt);
 			// request next image initialization to be performed while computing this depth-map
+			// 计算当前帧深度时，下一帧图像初始化同时在做。
 			data.events.AddEvent(new EVTProcessImage((uint32_t)Thread::safeInc(data.idxImage)));
 			// extract depth map
+			// 提取深度
 			data.sem.Wait();
 			if (data.nFusionMode >= 0) {
 				// extract depth-map using Patch-Match algorithm
+				// Step 3_2_1 patch match算法
 				data.depthMaps.EstimateDepthMap(data.images[evtImage.idxImage], data.nEstimationGeometricIter);
 			} else {
 				// extract disparity-maps using SGM algorithm
+				// Step 3_2_2 SGM算法
 				if (data.nFusionMode == -1) {
 					data.sgm.Match(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews);
 				} else {
 					// fuse existing disparity-maps
+					// 融合现存的视差图
 					const IIndex idx(data.images[evtImage.idxImage]);
 					DepthData& depthData(data.depthMaps.arrDepthData[idx]);
 					data.sgm.Fuse(*this, data.images[evtImage.idxImage], OPTDENSE::nNumViews, 2, depthData.depthMap, depthData.confMap);
+					// 计算法线，一般用不到为减少内存消耗尽量不算
 					if (OPTDENSE::nEstimateNormals == 2)
 						EstimateNormalMap(depthData.images.front().camera.K, depthData.depthMap, depthData.normalMap);
 					depthData.dMin = ZEROTOLERANCE<float>(); depthData.dMax = FLT_MAX;
@@ -2098,29 +2338,34 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			data.sem.Signal();
 			if (OPTDENSE::nOptimize & OPTDENSE::OPTIMIZE) {
 				// optimize depth-map
+				// 优化深度图
 				data.events.AddEventFirst(new EVTOptimizeDepthMap(evtImage.idxImage));
 			} else {
 				// save depth-map
+				// 保存深度图
 				data.events.AddEventFirst(new EVTSaveDepthMap(evtImage.idxImage));
 			}
 			break; }
-
+		// Step 3_3 depth 优化 移除小的连通域segment 填充小洞gap
 		case EVT_OPTIMIZEDEPTHMAP: {
 			const EVTOptimizeDepthMap& evtImage = *((EVTOptimizeDepthMap*)(Event*)evt);
 			const IIndex idx = data.images[evtImage.idxImage];
 			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save depth map as image
+			// 将深度图保存为图像
 			if (g_nVerbosityLevel > 3)
 				ExportDepthMap(ComposeDepthFilePath(depthData.GetView().GetID(), "raw.png"), depthData.depthMap);
 			#endif
 			// apply filters
+			// 滤波，将一些离散的深度值滤波剔除
 			if (OPTDENSE::nOptimize & (OPTDENSE::REMOVE_SPECKLES)) {
 				TD_TIMER_START();
 				if (data.depthMaps.RemoveSmallSegments(depthData)) {
 					DEBUG_ULTIMATE("Depth-map %3u filtered: remove small segments (%s)", depthData.GetView().GetID(), TD_TIMER_GET_FMT().c_str());
 				}
 			}
+			// 滤波，将深度图孔洞填充
 			if (OPTDENSE::nOptimize & (OPTDENSE::FILL_GAPS)) {
 				TD_TIMER_START();
 				if (data.depthMaps.GapInterpolation(depthData)) {
@@ -2128,15 +2373,17 @@ void Scene::DenseReconstructionEstimate(void* pData)
 				}
 			}
 			// save depth-map
+			// 保存深度图
 			data.events.AddEventFirst(new EVTSaveDepthMap(evtImage.idxImage));
 			break; }
-
+		// Step 3_4 depth 保存 一般用不到
 		case EVT_SAVEDEPTHMAP: {
 			const EVTSaveDepthMap& evtImage = *((EVTSaveDepthMap*)(Event*)evt);
 			const IIndex idx = data.images[evtImage.idxImage];
 			DepthData& depthData(data.depthMaps.arrDepthData[idx]);
 			#if TD_VERBOSE != TD_VERBOSE_OFF
 			// save depth map as image
+			// 将深度图保存为图像
 			if (g_nVerbosityLevel > 2) {
 				ExportDepthMap(ComposeDepthFilePath(depthData.GetView().GetID(), "png"), depthData.depthMap);
 				ExportConfidenceMap(ComposeDepthFilePath(depthData.GetView().GetID(), "conf.png"), depthData.confMap);
@@ -2148,6 +2395,7 @@ void Scene::DenseReconstructionEstimate(void* pData)
 			}
 			#endif
 			// save compute depth-map for this image
+			// 保存计算的深度图
 			if (!depthData.depthMap.empty())
 				depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), data.nEstimationGeometricIter < 0 ? "dmap" : "geo.dmap"));
 			depthData.ReleaseImages();
@@ -2172,6 +2420,7 @@ void* DenseReconstructionFilterTmp(void* arg) {
 }
 
 // filter estimated depth-maps
+// 深度图滤波
 void Scene::DenseReconstructionFilter(void* pData)
 {
 	DenseDepthMapData& data = *((DenseDepthMapData*)pData);
@@ -2187,6 +2436,7 @@ void Scene::DenseReconstructionFilter(void* pData)
 				break;
 			}
 			// make sure all depth-maps are loaded
+			// depth加载，确保所有的深度图被加载
 			depthData.IncRef(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
 			const unsigned numMaxNeighbors(8);
 			IIndexArr idxNeighbors(0, depthData.neighbors.GetSize());
@@ -2205,6 +2455,7 @@ void Scene::DenseReconstructionFilter(void* pData)
 					break;
 			}
 			// filter the depth-map for this image
+			// depth滤波
 			if (data.depthMaps.FilterDepthMap(depthData, idxNeighbors, OPTDENSE::bFilterAdjust)) {
 				// load the filtered maps after all depth-maps were filtered
 				data.events.AddEvent(new EVTAdjustDepthMap(evtImage.idxImage));
@@ -2245,6 +2496,7 @@ void Scene::DenseReconstructionFilter(void* pData)
 			}
 			#endif
 			// save filtered depth-map for this image
+			// 保存滤波的图像
 			depthData.Save(ComposeDepthFilePath(depthData.GetView().GetID(), "dmap"));
 			depthData.DecRef();
 			data.progress->operator++();
@@ -2262,6 +2514,7 @@ void Scene::DenseReconstructionFilter(void* pData)
 /*----------------------------------------------------------------*/
 
 // filter point-cloud based on camera-point visibility intersections
+// 点云滤波，主要是利用可见性进行滤波 一般用不到不再注释
 void Scene::PointCloudFilter(int thRemove)
 {
 	TD_TIMER_STARTD();

@@ -532,6 +532,7 @@ struct Interface
 			float area; // common image area relative to the reference image (ratio)
 			float score; // aggregated image score relative to the reference image (larger is better)
 
+			// implement BOOST serialization
 			template<class Archive>
 			void serialize(Archive& ar, const unsigned int /*version*/) {
 				ar & ID;

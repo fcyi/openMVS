@@ -52,16 +52,16 @@ class MVS_API Mesh
 public:
 	typedef float Type;
 
-	typedef TPoint3<Type> Vertex;
-	typedef uint32_t VIndex;
-	typedef TPoint3<VIndex> Face;
-	typedef uint32_t FIndex;
+	typedef TPoint3<Type> Vertex;  // 顶点坐标
+	typedef uint32_t VIndex;       // 顶点索引
+	typedef TPoint3<VIndex> Face;  // 面的三个顶点索引
+	typedef uint32_t FIndex;       // 面的索引
 
 	typedef SEACAVE::cList<Vertex,const Vertex&,0,8192,VIndex> VertexArr;
 	typedef SEACAVE::cList<Face,const Face&,0,8192,FIndex> FaceArr;
 
 	typedef SEACAVE::cList<VIndex,VIndex,0,8,VIndex> VertexIdxArr;
-	typedef SEACAVE::cList<FIndex,FIndex,0,8,FIndex> FaceIdxArr;
+	typedef SEACAVE::cList<FIndex,FIndex,0,8,FIndex> FaceIdxArr;  // 无序集合：存放相机能看到的所有face的id
 	typedef SEACAVE::cList<VertexIdxArr,const VertexIdxArr&,2,8192,VIndex> VertexVerticesArr;
 	typedef SEACAVE::cList<FaceIdxArr,const FaceIdxArr&,2,8192,VIndex> VertexFacesArr;
 
@@ -124,17 +124,17 @@ public:
 	VertexArr vertices;
 	FaceArr faces;
 
-	NormalArr vertexNormals; // for each vertex, the normal to the surface in that point (optional)
-	VertexVerticesArr vertexVertices; // for each vertex, the list of adjacent vertices (optional)
-	VertexFacesArr vertexFaces; // for each vertex, the ordered list of faces containing it (optional)
-	BoolArr vertexBoundary; // for each vertex, stores if it is at the boundary or not (optional)
+	NormalArr vertexNormals; // 顶点法线，for each vertex, the normal to the surface in that point (optional)
+	VertexVerticesArr vertexVertices; // 对每个顶点，所有与其相邻的顶点，for each vertex, the list of adjacent vertices (optional)
+	VertexFacesArr vertexFaces; // 对每个顶点，与包含其的所有faces，for each vertex, the ordered list of faces containing it (optional)
+	BoolArr vertexBoundary; // 存储每个顶点是否在边界，for each vertex, stores if it is at the boundary or not (optional)
 
-	NormalArr faceNormals; // for each face, the normal to it (optional)
+	NormalArr faceNormals; // 每个face的法线，for each face, the normal to it (optional)
 	FaceFacesArr faceFaces; // for each face, the list of adjacent faces, NO_ID for border edges (optional)
-	TexCoordArr faceTexcoords; // for each face, the texture-coordinates corresponding to its vertices, 3x num faces OR for each vertex (optional)
+	TexCoordArr faceTexcoords; // 每个face的纹理坐标，for each face, the texture-coordinates corresponding to its vertices, 3x num faces OR for each vertex (optional)
 	TexIndexArr faceTexindices; // for each face, the corresponding index of the texture (optional)
 
-	Image8U3Arr texturesDiffuse; // textures containing the diffuse color (optional)
+	Image8U3Arr texturesDiffuse; // 包含漫反射的纹理，textures containing the diffuse color (optional)
 
 	#ifdef _USE_CUDA
 	static CUDA::KernelRT kernelComputeFaceNormal;
@@ -342,11 +342,14 @@ struct TRasterMesh : TRasterMeshBase<DERIVED> {
 
 	void Project(const Mesh::Face& facet) {
 		// project face vertices to image plane
+		// 投影face的顶点到图像平面上
 		for (int v=0; v<3; ++v) {
 			// skip face if not completely inside
+			// 如果face没有完全包含在图像内则跳过
 			if (!static_cast<DERIVED*>(this)->ProjectVertex(vertices[facet[v]], v))
 				return;
 		}
+		// ??? 不知道为啥？新版代码里面去掉了基于法向量进行的face朝向的检测步骤
 		// draw triangle
 		Image8U3::RasterizeTriangleBary(pti[0], pti[1], pti[2], *this);
 	}
