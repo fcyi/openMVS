@@ -735,11 +735,12 @@ bool ImportScene(const String& strFolder, const String& strOutFolder, Interface&
 			Interface::Platform::Camera camera;
 			camera.name = colmapCamera.model;
 			camera.K = Interface::Mat33d::eye();
+			// colmap的相机位姿输入到OpenMVS时所进行的转换操作
 			// account for different pixel center conventions as COLMAP uses pixel center at (0.5,0.5) 
-			camera.K(0,0) = colmapCamera.params[0];
-			camera.K(1,1) = colmapCamera.params[1];
-			camera.K(0,2) = colmapCamera.params[2]-REAL(0.5);
-			camera.K(1,2) = colmapCamera.params[3]-REAL(0.5);
+			camera.K(0,0) = colmapCamera.params[0];  // fx
+			camera.K(1,1) = colmapCamera.params[1];  // fy
+			camera.K(0,2) = colmapCamera.params[2]-REAL(0.5);  // cx
+			camera.K(1,2) = colmapCamera.params[3]-REAL(0.5);  // cy
 			camera.R = Interface::Mat33d::eye();
 			camera.C = Interface::Pos3d(0,0,0);
 			if (OPT::bNormalizeIntrinsics) {

@@ -132,7 +132,7 @@ public:
 		#endif
 		ViewData GetImage(REAL scale) const {
 			if (ISEQUAL(scale, REAL(1))) {
-				#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
+				#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS  // 通过census来表征像素邻域信息
 				// census计算
 				CensusTransform(imageGray, const_cast<CensusMap&>(imageCensus));
 				#endif

@@ -108,7 +108,6 @@ void Camera::Transform(const Matrix3x3& _R, const Point3& _t, const REAL& _s)
 } // Transform
 /*----------------------------------------------------------------*/
 
-
 REAL Camera::PointDepth(const Point3& X) const
 {
 	return P(2,0)*X.x + P(2,1)*X.y + P(2,2)*X.z + P(2,3);
@@ -244,7 +243,11 @@ void GetImagePairROI(const Point3fArr& points1, const Point3fArr& points2, const
 
 	// compute rectification homography (from original to rectified image)
 	// 计算单应性矩阵，将原图像的坐标转换到校正后图像对应坐标
-	const Matrix3x3 H1(K1 * R1 * invK1);
+	// invK1/invK2:从像素坐标转到校正前的相机坐标；
+	// R1/R2: 从校正前的相机坐标系投影到校正后的相机坐标系下；
+	// K1/K2: 校正后的相机坐标系下的内参；
+	H1:用于获取校正后的相机坐标系下的内参
+	const Matrix3x3 H1(K1 * R1 * invK1); 
 	const Matrix3x3 H2(K2 * R2 * invK2);
 
 	// determine the ROIs in rectified images
@@ -252,10 +255,10 @@ void GetImagePairROI(const Point3fArr& points1, const Point3fArr& points2, const
 	roi1h.Reset(); roi2h.Reset();
 	FOREACH(i, points1) {
 		Point2f xh;
-		const Point3f& x1 = points1[i];
+		const Point3f& x1 = points1[i]; // points[i]中存放在第i个共视点的投影位置以及深度值
 		// 计算校正后的坐标
 		ProjectVertex_3x3_2_2(H1.val, x1.ptr(), xh.ptr());
-		// 将其加入到roi内
+		// 将其加入到roi内，roilh能够根据插入的点的坐标/覆盖情况算一个外接的roi矩形区域
 		roi1h.InsertFull(xh);
 		const Point3f& x2 = points2[i];
 		ProjectVertex_3x3_2_2(H2.val, x2.ptr(), xh.ptr());
@@ -266,7 +269,7 @@ void GetImagePairROI(const Point3fArr& points1, const Point3fArr& points2, const
 void SetCameraMatricesROI(const AABB2f& roi1h, const AABB2f& roi2h, cv::Size& size1, cv::Size& size2, Matrix3x3& K1, Matrix3x3& K2)
 {
 	// set the new image sizes such that they are equal and contain the entire ROI
-	// 设置新的图像大小，使它们相等，并包含整个ROI
+	// 设置新的图像大小，使它们相等，并包含整个ROI（所以去这两个roi区域长之和与宽之和的最大值）
 	const Point2f size1h(roi1h.GetSize());
 	const Point2f size2h(roi2h.GetSize());
 	const int maxSize(MAXF(size1.width+size2.width, size1.height+size2.height)/2);
@@ -384,7 +387,7 @@ REAL Camera::StereoRectifyFusiello(const cv::Size& size1, const Camera& camera1,
 	const Point3 v3(v1.cross(v2));
 
 	// new extrinsic (translation unchanged)
-	// 新的外参，平移不变
+	// 新的外参，平移不变，也就是从原有的世界坐标系转到校正后的相机坐标系的变换矩阵
 	RMatrix R;
 	R.SetFromRowVectors(normalized(v1), normalized(v2), normalized(v3));
 
@@ -392,7 +395,7 @@ REAL Camera::StereoRectifyFusiello(const cv::Size& size1, const Camera& camera1,
 	// 新的内参
 	K1 = camera1.K; K1(0,1) = 0;
 	K2 = camera2.K; K2(0,1) = 0;
-	K1(1,1) = K2(1,1) = (camera1.K(1,1)+camera2.K(1,1))/2;
+	K1(1,1) = K2(1,1) = (camera1.K(1,1)+camera2.K(1,1))/2;  // y轴的焦距
 
 	// new rotations
 	// 新的选择从校正前的相机坐标系转到校正后的相机坐标系
@@ -416,8 +419,8 @@ REAL Camera::StereoRectifyFusiello(const cv::Size& size1, const Camera& camera1,
 	#endif
 
 	// 计算新的基线距离// 计算新的基线距离
-	const Point3 t(R2 * (poseR*(-poseC)));
-	ASSERT(ISEQUAL(-t.x, norm(v1)) && ISZERO(t.y) && ISZERO(t.z));
+	const Point3 t(R2 * (poseR*(-poseC)));  // R2*poseR*0: 从左相机的光心投射到校正后的右相机的坐标系下的位置
+	ASSERT(ISEQUAL(-t.x, norm(v1)) && ISZERO(t.y) && ISZERO(t.z));  // 由于左目光心始终在右目光心的左边，所以-t.x才是基线的长度
 	return t.x;
 } // StereoRectifyFusiello
 
@@ -429,7 +432,7 @@ REAL Camera::StereoRectifyFusiello(const cv::Size& size1, const Camera& camera1,
 //  - points1 and points2: contain the pairs of corresponding pairs of image projections and their depth
 //  - size1 and size2: input the size of the source images, output the size of the rectified images (rectified image sizes are equal)
 /**
- * @brief 调整矫正后的相机矩阵，使矫正后的图像包含两个源图像共有的整个区域;只要两种相机在x上的焦距和偏度相等，
+ * @brief 调整矫正后的相机矩阵，使矫正后的图像包含两个源图像共有的整个区域;只要两种相机在x上的焦距和偏度（一般设置为0）相等，
  * 那么两种图像的点尺度也相等。
  * 
  * @param[in] points1 包含对应对的图像投影坐标及其深度
@@ -449,7 +452,7 @@ void Camera::SetStereoRectificationROI(const Point3fArr& points1, cv::Size& size
 
 	#if 1
 	// ignore skewness
-	// 将偏移系数设为0
+	// 将偏移系数设为0，一般进行相机标定，投影矩阵中(0, 1)位置处的数值一般也是0
 	K1(0,1) = K2(0,1) = 0;
 	#else
 	// set same skewness
@@ -457,7 +460,7 @@ void Camera::SetStereoRectificationROI(const Point3fArr& points1, cv::Size& size
 	#endif
 
 	// set same focal-length on x too
-	// 将两个图像焦距设为一样
+	// 将两个图像焦距(fx)设为一样
 	K1(0,0) = K2(0,0) = (K1(0,0)+K2(0,0))/2;
 	ASSERT(ISEQUAL(K1(1,1), K2(1,1)));
 
@@ -467,7 +470,7 @@ void Camera::SetStereoRectificationROI(const Point3fArr& points1, cv::Size& size
 	RECTIFY::GetImagePairROI(points1, points2, K1, K2, R1, R2, camera1.GetInvK(), camera2.GetInvK(), roi1h, roi2h);
 
 	// set the new camera matrices such that the ROI is centered
-	// 设置新的相机矩阵，使ROI居中
+	// 根据计算得到的roi区域，对相机参数进行调整，设置新的相机矩阵，使ROI居中
 	RECTIFY::SetCameraMatricesROI(roi1h, roi2h, size1, size2, K1, K2);
 } // SetStereoRectificationROI
 /*----------------------------------------------------------------*/

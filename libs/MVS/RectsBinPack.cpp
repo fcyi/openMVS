@@ -497,9 +497,9 @@ void MaxRectsBinPack::PruneFreeList()
 int MaxRectsBinPack::ComputeTextureSize(const RectArr& rects, int mult)
 {
 	int area(0), maxSizePatch(0);
-	FOREACHPTR(pRect, rects) {
+	FOREACHPTR(pRect, rects) {  // 遍历所有patch所对应的矩形框
 		const Rect& rect = *pRect;
-		area += rect.area();
+		area += rect.area();  // 计算矩形框的面积之和
 		const int sizePatch(MAXF(rect.width, rect.height));
 		if (maxSizePatch < sizePatch)
 			maxSizePatch = sizePatch;
@@ -508,7 +508,7 @@ int MaxRectsBinPack::ComputeTextureSize(const RectArr& rects, int mult)
 	// considering the best case scenario for the packing algorithm: 0.9 fill
 	area = CEIL2INT((1.f/0.9f)*(float)area);
 	// compute texture size...
-	const int sizeTex(MAXF(CEIL2INT(SQRT((float)area)), maxSizePatch));
+	const int sizeTex(MAXF(CEIL2INT(SQRT((float)area)), maxSizePatch));   // 获取纹理图的边
 	if (mult > 0) {
 		// ... as multiple of mult
 		return ((sizeTex+mult-1)/mult)*mult;

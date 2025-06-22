@@ -527,7 +527,9 @@ SemiGlobalMatcher::~SemiGlobalMatcher()
 }
 
 CLISTDEF0IDX(SemiGlobalMatcher::AccumCost,int) SemiGlobalMatcher::GenerateP2s(AccumCost P2, float P2alpha, float P2beta)
-{
+{	
+	// 根据当前像素和邻域像素的灰度差i，对视差代价值进行调整
+	// 这是考虑到对于前后景的情况，前后景之间的视差差异本来就应该很大，而前后景之间的颜色差异一般比较大
 	// p2'=p2*(1+alpha*e^(-i1-i2))^2/2*beta^2))
 	CLISTDEF0IDX(AccumCost,int) P2s(256);
 	FOREACH(i, P2s)
@@ -607,8 +609,10 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 		#endif
 		// compute scale used for the disparity estimation
 		REAL scale(1);
-		// 计算用来depth计算的scale 
+		// 计算用来depth计算的scale，用于后续的tSGM，因为其用到金字塔操作
+		// 根据最小分辨率计算出与之对应的合适的level值
 		if (minResolution) {
+			// 虽然一开始的分辨率resolutionLevel设为8，但是实际的分辨率level还是根据minResolution进行的
 			unsigned resolutionLevel(8);
 			Image8U::computeMaxResolution(leftData.imageGray.width(), leftData.imageGray.height(), resolutionLevel, minResolution);
 			scale = REAL(1)/MAXF(2,POWI(2,resolutionLevel));
@@ -633,10 +637,14 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 			const cv::Size size(leftDataLevel.imageGray.size());
 			const cv::Size sizeValid(size.width-2*halfWindowSizeX, size.height-2*halfWindowSizeY);
 			const bool bFirstLevel(leftDisparityMap.empty());  //第一次计算标志
-			if (bFirstLevel) {
+			if (bFirstLevel) {  // 第一次，则对mask进行初始化
 				// initialize the disparity-map with a rough estimate based on the sparse point-cloud
 				//TODO: remove DepthData::ViewData dependency
 				// 初始用稀疏点云对depth进行初始化，与patchMatch初始化一样。
+				// 对左图进行resize
+				// note: tSGM所用的金字塔中的分辨率是从scale开始的，此处之所以要对scale进行缩放，即乘以0.5，
+				// 是因为在通过tSGM得到多分辨率的视差图之后，会对这些视差图进行上采样，所以作者在初始化阶段，
+				// 对于视差图的初始化，尺度就将其缩了两倍
 				Image leftImageLevel(leftImage.GetImage(scene.platforms, scale*0.5, false));
 				DepthData::ViewData image;
 				image.pImageData = &leftImageLevel; // used only for avgDepth
@@ -644,23 +652,24 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 				image.camera = leftImageLevel.camera;
 				DepthMap depthMap;
 				Depth dMin, dMax;
+				// 对稀疏点进行三角化再进行栅格化，对深度图进行插值
 				TriangulatePoints2DepthMap(image, scene.pointcloud, points, depthMap, dMin, dMax, true);
 				points.Release();
 				Matrix3x3 H2(H); Matrix4x4 Q2(Q);
-				Image::ScaleStereoRectification(H2, Q2, scale*0.5);
+				Image::ScaleStereoRectification(H2, Q2, scale*0.5);  // 调整H2、Q2的适应尺度，因为H2、Q2是针对于原图分辨率（即scale）设计的，此处将其适应尺度缩小一倍，因为depthMap还是在最低level的基础上除以2
 				const cv::Size sizeHalf(Image8U::computeResize(size, 0.5));
 				// 有效视差去除边界不大于窗口的像素
 				const cv::Size sizeValidHalf(sizeHalf.width-2*halfWindowSizeX, sizeHalf.height-2*halfWindowSizeY);
 				leftDisparityMap.create(sizeValidHalf);
 				//depth转视差图，H，Q介绍看上个函数极限矫正StereoRectifyImages
 				Depth2DisparityMap(depthMap, H2.inv(), Q2.inv(), 1, leftDisparityMap);
-				// resize masks
+				// resize masks，mask中记录的主要是哪些点是用来处理，从而得到视差图，例如边界没有视差值，mask会把这个信息记录下来，之后进行resize到相应level的大小size
 				cv::resize(leftMaskMap, leftMaskMap, size, 0, 0, cv::INTER_NEAREST);
 				cv::resize(rightMaskMap, rightMaskMap, size, 0, 0, cv::INTER_NEAREST);
-				const cv::Rect ROI(halfWindowSizeX,halfWindowSizeY, sizeValid.width,sizeValid.height);
+				const cv::Rect ROI(halfWindowSizeX,halfWindowSizeY, sizeValid.width,sizeValid.height); // roi的起始点(halfWindowSizeX, halfWindowSizeY)，roi宽和高分别为sizeValid.width、sizeValid.height
 				leftMaskMap(ROI).copyTo(leftMaskMap);
 				rightMaskMap(ROI).copyTo(rightMaskMap);
-			} else {
+			} else {  // 非第一次，则对mask进行上采样
 				// upscale masks
 				UpscaleMask(leftMaskMap, sizeValid);
 				UpscaleMask(rightMaskMap, sizeValid);
@@ -669,8 +678,8 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 			Index numCosts;
 			if (tSGM) {
 				// upscale the disparity-map from the previous level
-				// 左右视差转换为右左视差
-				FlipDirection(leftDisparityMap, rightDisparityMap);
+				// 左右视差（以左图为基准得到的视差图）转换为右左视差（以右图为基准得到的视差图）
+				FlipDirection(leftDisparityMap, rightDisparityMap);  // 视差图翻转
 				// 计算每个像素点的视差搜索范围（对应论文中SURE: Photogrammetric Surface Reconstruction from Imagery 2.2.2的介绍）
 				numCosts = Disparity2RangeMap(rightDisparityMap, rightMaskMap, bFirstLevel?11:5, bFirstLevel?33:7);
 			} else {
@@ -688,7 +697,7 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 						range.maxDisp = d;
 				} while (++pd < pde);
 				// set disparity search range to the global min/max range
-				//? numDisp+16原因？
+				//? numDisp+16原因？这是为了将最大视差与最小视差之间的差异限制在一个范围之内
 				const Disparity numDisp(range.numDisp()+16);
 				const Disparity disp(range.minDisp+range.maxDisp);
 				range.minDisp = disp-numDisp;  // 2*minDisp-16
@@ -696,18 +705,22 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 				maxNumDisp = range.numDisp();
 				numCosts = 0;  // (size.width-2*halfWindowSizeX, size.height-2*halfWindowSizeY)*(range.maxDisp-range.minDisp)
 				imagePixels.resize(sizeValid.area());
+				// 存储每个像素的视差范围、ID（像素是第几个进行视差搜索）
 				for (PixelData& pixel: imagePixels) {
 					pixel.range = range;
 					pixel.idx = numCosts;
-					numCosts += maxNumDisp;
+					numCosts += maxNumDisp;  // 为何要需要搜索多少个视差？这是为了对imageCosts进行初始化，有多少个像素需要计算视差范围，就需要记录多少个代价值
 				}
 			}
+			// sgm的代价计算和匹配过程的具体做法
 			imageCosts.resize(numCosts);
 			imageAccumCosts.resize(numCosts);
-			// 构建right-left 视差图
+			// 代价匹配完成后，能得到一个视差图以及对应的代价容器（也可以理解为一张置信图，因为代价值越小，对应像素点的视差、深度等三维信息越可信）
+			// 构建right-left 视差图（以右图为基准的视差图）
 			Match(rightDataLevel, leftDataLevel, rightDisparityMap, costMap);
-			// estimate left-right disparity-map
+			// estimate left-right disparity-map（以左图为基准的视差图）
 			if (tSGM) {
+				// 根据深度初始值，计算每个像素的视差范围，再对imageCosts进行resize
 				numCosts = Disparity2RangeMap(leftDisparityMap, leftMaskMap, bFirstLevel?11:5, bFirstLevel?33:7);
 				imageCosts.resize(numCosts);
 				imageAccumCosts.resize(numCosts);
@@ -721,7 +734,7 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 			}
 			// 构建left-right视差图
 			Match(leftDataLevel, rightDataLevel, leftDisparityMap, costMap);
-			// Step 3_2_2_4  视差一致性检查，check disparity-map cross-consistency
+			// Step 3_2_2_4  视差一致性检查（用于剔除错误点，理论上，对于同一个空间点，在基于左图的视差图与基于右图的视差图中对应位置的视差仅仅除正负相反外，绝对数值是很接近的），check disparity-map cross-consistency
 			#if 0
 			if (ISEQUAL(scale, REAL(1))) {
 				cv::Ptr<cv::ximgproc::DisparityWLSFilter> filter = cv::ximgproc::createDisparityWLSFilterGeneric(true);
@@ -739,11 +752,13 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 				// 错误匹配剔除方法是左右一致性法,将左右影像互换位置，即左影像成为右影像，右影像成为左影像，再做一次立体匹配，得到另一张视差图，因为视差图中每个值所反映的是
 				// 两个像素之间的对应关系，所以依据视差的唯一性约束，通过左影像的视差图，找到每个像素在右影像的同名点像素及该像素对应的视差值，这两个视差值之间的差值若小于一定
 				// 阈值（一般为1个像素），则满足唯一性约束被保留，反之则不满足唯一性约束而被剔除
+				// 一开始之所以要进行两次左右一致性检查以及进行斑点噪声去除，是因为初始的视差图与真实视差图存在较大的区别
 				ConsistencyCrossCheck(leftDisparityMap, rightDisparityMap);
 				ConsistencyCrossCheck(rightDisparityMap, leftDisparityMap);
-				// 视差后处理剔除speckles
+				// 视差后处理剔除speckles（OpenCV中的视差计算方法，都会使用此处的过滤方法去除斑点噪声，实际中，若视差图里有大量的斑点噪声，也可以利用此处的方法进行简单的处理）
 				cv::filterSpeckles(leftDisparityMap, NO_DISP, OPTDENSE::nSpeckleSize, 5);
 				cv::filterSpeckles(rightDisparityMap, NO_DISP, OPTDENSE::nSpeckleSize, 5);
+				// 提取mask
 				ExtractMask(leftDisparityMap, leftMaskMap);
 				ExtractMask(rightDisparityMap, rightMaskMap);
 			} else {
@@ -759,6 +774,9 @@ void SemiGlobalMatcher::Match(const Scene& scene, IIndex idxImage, IIndex numNei
 		#endif
 		// sub-pixel disparity-map estimation
 		// Step 3_2_2_5 亚像素提取：采用二次曲线内插的方法获得子像素精度
+		// 虽然，代码中视差值是以整型方式进行存储，但是若能扩展其数据表示所用类型的数量级，利用使用浮点数表示，则视差值的精度会更高一些。
+		// 对于每个像素，获取其最优视差（最小代价值）后，根据其所包含的所有视差层中距离最优视差最近的两个视差值进行数值拟合，拟合到的代价最小值所对应的视差可能是一个小数，
+		// 这个视差值，就是具有亚像素精度的视差
 		RefineDisparityMap(leftDisparityMap);
 		#if 1
 		// export disparity-map for the left image
@@ -923,10 +941,10 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 	{
 	ASSERT(!imageCosts.empty());
 	const float eps(1e-3f); // 用来抑制无纹理区域噪声影响，used suppress the effect of noise in untextured regions
-	auto pixel = [&](int idx, int r, int c) {
+	auto pixel = [&](int idx, int r, int c) {  // 此处的idx就是要处理的图像的id
 		// ignore pixel if not valid
 		// 如果视差最小值大于最大值则无效
-		const PixelData& pixel = imagePixels[idx];
+		const PixelData& pixel = imagePixels[idx];  // 获取视差范围，以及相应代价值在容器结构中的存放位置
 		if (!pixel.range.isValid())
 			return;
 		#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
@@ -941,9 +959,9 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 		// pixel.idx记录的是当前像素的cost在这整个cost指针变量中的起始地址
 		Cost* costs = imageCosts.data()+pixel.idx;
 		const Census lc(leftImage.imageCensus(r,c));
-		for (int d=pixel.range.minDisp; d<pixel.range.maxDisp; ++d) {
-			const ImageRef x(c+d,r);
-			// 右图中没有这个点则直接cost给固定值255
+		for (int d=pixel.range.minDisp; d<pixel.range.maxDisp; ++d) {  // 对整个视差范围进行遍历
+			const ImageRef x(c+d,r);  // 对于当前像素计算在每个视差下，参考图像中对应的像素的理论位置
+			// 右图中没有这个点则直接cost给固定值255，若存在则获取该像素位置上的census值
 			if (!rightImage.imageCensus.isInside(x)) {
 				*costs++ = 255;
 				continue;
@@ -1052,24 +1070,25 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 	#else
 	const ImageGray::Type Igray(0.5f);
 	#endif
-	struct LineData {
-		AccumCost* L;
-		Range R;
+	struct LineData {  // 用于表示一条路径
+		AccumCost* L;  // 存储视差层范围里面对应的代价聚合值
+		Range R;       // 视差范围
 		~LineData() { delete[] L; }
 		AccumCost operator[] (int i) const { return L[i]; }
 		AccumCost& operator[] (int i) { return L[i]; }
 	};
+	// !!! 最关键的函数之一。计算每个像素在指定的子聚合路径下的聚合代价计算。
 	auto pixelAccum = [&](const Cost* costs, const LineData& Lp, LineData& Ls, AccumCost* accums, ImageGray::Type DI) {
 		struct Compute {
 			static inline void MINS(AccumCost& m, AccumCost v) { if (m > v) m = v; }
 		};
 		ASSERT(Ls.R.isValid());
 		#if SGM_SIMILARITY == SGM_SIMILARITY_CENSUS
-		const AccumCost P2(P2s[DI]);
+		const AccumCost P2(P2s[DI]);  // 根据当前像素DI和它的邻域像素（也就是对于当前像素而言，指定的路径上的相邻像素）的灰度差(P2s[DI])计算出当前像素的代价值P2(P2s[DI])
 		#else
 		const AccumCost P2(P2s[ABS(ROUND2INT(255.f*DI))]);
 		#endif
-		// 计算Lp与Ls重合的视差范围
+		// 计算Lp与Ls重合的视差范围，即当前像素(Ls)的视差范围与路径上相邻像素(Lp)的视差范围
 		const Disparity minDisp(MAXF(Lp.R.minDisp, Ls.R.minDisp));
 		const Disparity maxDisp(MINF(Lp.R.maxDisp, Ls.R.maxDisp));
 
@@ -1078,6 +1097,7 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			// fill all accumulated costs with L(d)=C(d)+P2
 			// 参考公式8 如果与邻域没有代价重合则：L(d)=C(d)+P2
 			const Disparity numDisp(Ls.R.numDisp());
+			// 注意，此处计算的当前像素在每个路径下的聚合代价costs[idxDisp]+P2还会被存储到Ls[idxDisp]中，目的是为了加速查找，因为当考虑后续几行/列时，就会考虑到当前像素的聚合代价
 			for (int idxDisp=0; idxDisp<numDisp; ++idxDisp)
 				accums[idxDisp] += (Ls[idxDisp] = costs[idxDisp]+P2);
 		} else {
@@ -1090,8 +1110,10 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 			//计算lp与ls重合部分的视差最小值
 			//该部分用的公式6
 			// 计算聚合路径在重合视差范围内的最小代价
+			// 对Lp与Ls的重合视差范围中的视差进行遍历
 			for (const AccumCost *L=Lp.L+(minDisp-Lp.R.minDisp), *endL=L+(maxDisp-minDisp); L<endL; ++L)
 				Compute::MINS(minLp, *L);
+			// 遍历当前像素在整个视差范围内的聚合代价值
 			for (Disparity d=Ls.R.minDisp; d<Ls.R.maxDisp; ++d) {
 				const int idxDisp(d-Ls.R.minDisp);
 				AccumCost& L = Ls[idxDisp];
@@ -1107,7 +1129,8 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 					else
 						Compute::MINS(L, Lp[idxDispp]+P2);
 				}
-				// 累加当前视差层在当前聚合路径的聚合代价
+				// 累加当前视差层在当前聚合路径的聚合代价，因为每个视差层都涉及到多条路径，因此需要对每一条路径上的代价值进行聚合、累加。
+				// 当然，由于引用的关系，这个代价值也会存放到Ls[idxDisp]中，即当前像素Ls的idxDisp视差层下的聚合代价
 				accums[idxDisp] += (L = costs[idxDisp]+L-minLp);
 			}
 		}
@@ -1269,11 +1292,11 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 		#undef ACCUM_PIXELS
 	} else {
 	// 8聚合路径
-	const ImageRef dirs[] = {{-1,0}, {0,-1}, {-1,-1}, {1,-1}};
-	struct AccumLines {
-		const Disparity maxNumDisp;  // int16
+	const ImageRef dirs[] = {{-1,0}, {0,-1}, {-1,-1}, {1,-1}};  // 定义的一条聚合路径
+	struct AccumLines {  // 聚合路径的定义
+		const Disparity maxNumDisp;  // int16。最大视差层
 		LineData* linesBuffer;
-		LineData* lines[numDirs][2];  // [0]是路径上上个像素的聚合代价 [1]是当前像素的
+		LineData* lines[numDirs][2];  // [0]是路径上上个像素的聚合代价 [1]是当前像素的。存储每条聚合路径的数据。这样在计算当前像素的聚合代价时，若用到之前像素的聚合代价，可以直接通过这个结构体获取，进而提高效率。若所有像素进行代价聚合计算时都使用这个结构体，则每算完像素的聚合代价后，需要对这个结构体中存放的内容进行更新
 		AccumLines(Disparity _maxNumDisp) : maxNumDisp(_maxNumDisp), linesBuffer(NULL) {}
 		~AccumLines() { delete[] linesBuffer; }
 		void Init(int w) {
@@ -1284,6 +1307,7 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 				for (int i=0; i<buffersize; ++i)
 					linesBuffer[i].L = new AccumCost[maxNumDisp];
 				LineData* line(linesBuffer-linewidth+1);
+				// 若非多线程，则通过linewidth进行一行一行地遍历，若为多线程，则通过linewidth进行逐像素地遍历
 				for (int idxDir=0; idxDir<numDirs; ++idxDir) {
 					lines[idxDir][0] = (line+=linewidth);
 					lines[idxDir][1] = (line+=linewidth);
@@ -1298,31 +1322,38 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 		}
 		//  重置上个像素的最小代价值和代价数组
 		void NextLine() {
+			// 也就是将lines[...][1]赋给lines[...][0]，因为lines[...][0]用于存放当前像素对应的指定路径上的像素的聚合代价值
+			// lines[...][1]用于存放当前像素对应的聚合代价值，这么做是为了方便后续像素的代价聚合计算
 			for (int idxDir=0; idxDir<numDirs; ++idxDir)
 				std::swap(lines[idxDir][0], lines[idxDir][1]);
 		}
 		const LineData& operator() (int idxDir, int r, int c) const { return lines[idxDir][r][c]; }
 		LineData& operator() (int idxDir, int r, int c) { return lines[idxDir][r][c]; }
 	};
-	AccumLines lines(maxNumDisp);
+	AccumLines lines(maxNumDisp);  // maxNumDisp，每个像素的最大视差范围，一般固定为64或32
+	// (dx, dy)表示对于当前像素聚合路径的方向；x表示当前要处理的像素
 	#define ACCUM_PIXELS(dx, dy, _x) \
-		const int idx(r*sizeValid.width+c); \
-		const PixelData& pixel = imagePixels[idx]; \
-		if (!pixel.range.isValid()) \
+		const int idx(r*sizeValid.width+c); \  // 计算当前点在整个代价容器里的像素索引
+		const PixelData& pixel = imagePixels[idx]; \  // 从代价容器中获取对应的视差范围以及聚合代价
+		if (!pixel.range.isValid()) \  // 判断视差范围是否有效
 			continue; \
-		const Cost* costs = imageCosts.cdata()+pixel.idx; \
+		const Cost* costs = imageCosts.cdata()+pixel.idx; \  // 从代价容器中获取对应的聚合代价
 		AccumCost* accums = imageAccumCosts.data()+pixel.idx; \
+		// 遍历每一条路径
 		for (int idxDir=0; idxDir<numDirs; ++idxDir) { \
 			const ImageRef& dir = dirs[idxDir]; \
+			// 路径上的聚合路径
 			const LineData& Lp = lines(idxDir,1+dir.y,_x+dir.x); \
+			// ls 是当前像素的路径
 			LineData& Ls = lines(idxDir,1,_x); \
 			Ls.R = pixel.range; \
-			const ImageRef xp(c+dx, r+dy); \
+			const ImageRef xp(c+dx, r+dy); \  // 聚合路径上对应像素的坐标，方便获取该像素对应的灰度值
+			// DI 是用于调整P2代价值的（具体参考SGM部分的讲解）
 			const ImageGray::Type DI(leftImage.imageGray(r,c)-(leftImage.imageGray.isInside(xp)?leftImage.imageGray(xp):Igray)); \
-			pixelAccum(costs, Lp, Ls, accums, DI); \
+			pixelAccum(costs, Lp, Ls, accums, DI); \  // 计算当前像素在遍历到的路径上的聚合代价
 		}
 	// 从左上方向开始聚合
-	lines.Init(sizeValid.width);
+	lines.Init(sizeValid.width);  // 每次预存一行像素的视差范围，或各个路径上的聚合代价
 	for (int r=0; r<sizeValid.height; ++r) {
 		for (int c=0; c<sizeValid.width; ++c) {
 			ACCUM_PIXELS(dir.x, dir.y, c);
@@ -1330,7 +1361,8 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 		// 循环到下一行时，将当前行计算的路径代价替换掉原来的上一行
 		lines.NextLine();
 	}
-	// 同上，聚合路径是上面的中心对称方向（右下）
+	// 同上，聚合路径是上面的中心对称方向（右下，注意，此处是-dir.x， -dir.y，所以说是中心对称方向）
+	// 每个像素在每个视差层下的所有路径上的聚合代价累积值
 	lines.Init(sizeValid.width);
 	for (int r=sizeValid.height; --r>=0; ) {
 		for (int c=sizeValid.width; --c>=0; ) {
@@ -1338,12 +1370,13 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 		}
 		lines.NextLine();
 	}
-	#undef ACCUM_PIXELS
+	#undef ACCUM_PIXELS 
 	}
 	}
 
 	// select best disparity and cost
 	// 在SGM算法中，视差计算采用赢家通吃（WTA）算法，每个像素选择最小聚合代价值所对应的视差值作为最终视差
+	// 也就是对于每个像素，从其所对应的视差层中选择聚合代价最小的视差作为其最优视差值
 	{
 	disparityMap.create(sizeValid);
 	costMap.create(sizeValid);
@@ -1351,7 +1384,7 @@ void SemiGlobalMatcher::Match(const ViewData& leftImage, const ViewData& rightIm
 	auto pixel = [&](int idx) {
 		const PixelData& pixel = imagePixels[idx];
 		if (pixel.range.isValid()) {
-			const AccumCost* accums = imageAccumCosts.cdata()+pixel.idx;
+			const AccumCost* accums = imageAccumCosts.cdata()+pixel.idx;  // 当前像素聚合代价的起始位置，pixel.idx为像素对应的聚合代价在代价容器imageAccumCosts中的索引
 			const AccumCost* bestAccum = accums;
 			// 遍历整个有效视差范围，寻找最小值对应的视差
 			for (const AccumCost *accum=accums+1, *accumEnd=accums+pixel.range.numDisp(); accum<accumEnd; ++accum) {
@@ -1400,7 +1433,7 @@ void SemiGlobalMatcher::CensusTransform(const Image8U& imageGray, CensusMap& ima
 	auto pixel = [&](int, int r, int c) {
 		const ImageRef u(c+halfWindowSizeX, r+halfWindowSizeY);
 		const uint8_t g(image(u));
-		Census& cs = imageCensus(r,c);
+		Census& cs = imageCensus(r,c);  // 64位无符号的int型数据，用于存放census计算到的二进制串
 		cs = 0;
 		for (int i=-halfWindowSizeY; i<=halfWindowSizeY; ++i) {
 			for (int j=-halfWindowSizeX; j<=halfWindowSizeX; ++j) {
@@ -1430,28 +1463,31 @@ void SemiGlobalMatcher::CensusTransform(const Image8U& imageGray, CensusMap& ima
 // the validity mask-map is considered as well and upscaled in the same time;
 // return the total size of the disparities searched
 // 计算每个像素点的视差搜索范围（对应论文中SURE: Photogrammetric Surface Reconstruction from Imagery 2.2.2的介绍）
-// 因为我们这个视差范围计算是给下一个level使用的，所以我们计算的视差范围imagePixels的大小是传入的视差图的2倍
+// 因为我们这个视差范围计算是给下一个level使用的（相邻level之间的分辨率长和宽差2倍，此处是根据当前level的视差图计算下一个level上像素的视差范围
+// 由于分辨率的差异，在根据当前level计算下一个level的视差范围时会涉及到插值操作，具体而言就是根据邻域搜索视差范围），
+// 所以我们计算的视差范围imagePixels的大小是传入的视差图的2倍
 // 在根据视差图每个像素点计算范围时候，会同时进行插值得到resize后的imagePixels。
 SemiGlobalMatcher::Index SemiGlobalMatcher::Disparity2RangeMap(const DisparityMap& disparityMap, const MaskMap& maskMap, Disparity minNumDisp, Disparity minNumDispInvalid)
 {
 	ASSERT(!disparityMap.empty() && disparityMap.width()<maskMap.width() && disparityMap.height()<maskMap.height());
 	// 这个size是disparityMap的大小*2后的size
-	const cv::Size size2x(maskMap.size());
-	imagePixels.resize(size2x.area());
+	const cv::Size size2x(maskMap.size());  // mask用于记录可以进行视差范围计算的像素
+	imagePixels.resize(size2x.area());  // 存储图像中每个像素点的视差范围
 	Index numCosts(0);
 	maxNumDisp = 0;
 	CLISTDEF0IDX(Disparity,Disparity) disps(31*31);
+	// 逐像素处理视差图
 	for (int r=0; r<disparityMap.rows; ++r) {
 		const int r2(r == 0 ? 0 : r*2+halfWindowSizeY);
 		ASSERT(r2 < size2x.height);
 		// 用在插值resize后的坐标的
 		const int offset(r2*size2x.width);
-		int c2e(halfWindowSizeX);
+		int c2e(halfWindowSizeX);  // 窗口一般的大小，其实也就是每一行进行视差范围计算的起始点位置
 		// 标记的是哪些像素坐标可以计算视差图
 		const Mask* pm(maskMap.ptr<const Mask>(r*2+halfWindowSizeY, halfWindowSizeX));
 		for (int c=0, c2=0; c<disparityMap.cols; ++c, pm+=2) {
 			Disparity numDisp; Range range;
-			if (*pm == INVALID) {
+			if (*pm == INVALID) {  // 若当前像素不处于mask中，则不用对其进行视差计算
 				// set empty range
 				// 设置空的视差范围
 				range = Range{NO_DISP,NO_DISP};
@@ -1463,7 +1499,8 @@ SemiGlobalMatcher::Index SemiGlobalMatcher::Disparity2RangeMap(const DisparityMa
 				// search range around 41x41 or 7x7 window
 				//如果视差无效，则搜索窗口41*41(扩大搜索)反之7*7
 				disps.Empty();
-				const int hw(bInvalid ? 20 : 3);
+				const int hw(bInvalid ? 20 : 3);  // 搜索窗口大小的一半
+				// 在搜索窗口中找邻域视差值，并将所有得到的有效视差值都放到disps里面
 				for (int i=-hw; i<=hw; ++i) {
 					for (int j=-hw; j<=hw; ++j) {
 						const ImageRef u(c+j,r+i);
@@ -1513,11 +1550,12 @@ SemiGlobalMatcher::Index SemiGlobalMatcher::Disparity2RangeMap(const DisparityMa
 				PixelData& pixel = imagePixels[offset+c2];
 				pixel.range = range;
 				pixel.idx = numCosts;
-				numCosts += numDisp;
+				numCosts += numDisp;  // 统计对于每一个需要计算视差有效范围的像素而言搜索到的有效视差的个数
 			} while (++c2 < c2e);
 		}
 		ASSERT(c2e < size2x.width);
 		//插值resize后的图像上点的视差范围，统计numcosts所搜索的视差的总个数
+		// 此处是担心在进行插值时，mask边界部分有像素没有被考虑进去，因此此处对这部分没有考虑的像素的视差范围相关属性以复制的方式进行赋值
 		do {
 			const PixelData& pixel = imagePixels[offset+c2e-1];
 			PixelData& _pixel = imagePixels[offset+c2e];
@@ -1525,6 +1563,7 @@ SemiGlobalMatcher::Index SemiGlobalMatcher::Disparity2RangeMap(const DisparityMa
 			_pixel.idx = numCosts;
 			numCosts += pixel.range.numDisp();
 		} while (++c2e < size2x.width);
+		// 对下一行像素的视差范围以复制的形式进行扩充
 		const int _offsete((r+1 == disparityMap.rows ? size2x.height : r*2+halfWindowSizeY+2)*size2x.width);
 		for (int _offset=offset+size2x.width; _offset<_offsete; _offset+=size2x.width) {
 			for (int c2=0; c2<size2x.width; ++c2) {
@@ -1551,11 +1590,11 @@ void SemiGlobalMatcher::ConsistencyCrossCheck(DisparityMap& l2r, const Disparity
 	ASSERT(l2r.height() == r2l.height());
 
 	auto pixel = [&](int, int r, int c) {
-		Disparity& ld = l2r(r,c);
-		if (ld == NO_DISP)
+		Disparity& ld = l2r(r,c);  // 基于左图的视差值
+		if (ld == NO_DISP)  // 视差值无效
 			return;
 		// compute the corresponding disparity pixel according to the disparity value
-		// 根据视差值计算对应的像素坐标
+		// 根据视差值计算基于右图的视差图中对应的像素坐标
 		const ImageRef v(c+ld,r);
 		// check image bounds
 		// 确认是否超出图像边界
@@ -1801,9 +1840,16 @@ void SemiGlobalMatcher::UpscaleMask(MaskMap& maskMap, const cv::Size& size2x)
 void SemiGlobalMatcher::RefineDisparityMap(DisparityMap& disparityMap) const
 {
 	ASSERT(!disparityMap.empty());
+	// 要求亚像素精度subpixelSteps必须大于1，因为代码中的视差值（整数（此处被保留下来的视差值几乎都是用整型进行表示）） = 实际视差值(浮点数（亚像素精度）)*亚像素精度(subpixelSteps)
+	// 显然，若subpixelSteps>1，则可以对实际视差值进行缩放，进而再以整型对其进行存储时，能够存储到一部分小数精度的视差值，
+	// 例如，若subpixelSteps == 10，则可以使得代码中的视差值存储到实际视差值在小数点后的一位数值，
+	// 即实际视差值中，小数点前的整数部分，以及小数点之后的一位小数都得以存储到代码中的视差变量中。若subpixelSteps<1，
+	// 则在对实际视差值进行存储时，会对数据进行压缩，使其信息受损，例如若subpixelSteps == 0.1，则个位上的视差值就损失掉了。
+	// 同理，若subpixelSteps == 1，则对实际视差值的存储没有任何帮助，还增加计算量，降低效率。
+	// 显然，subpixelSteps越大，实际视差值保留的精度越高。
 	if (subpixelSteps <= 1)
 		return;
-	if (subpixelMode == SUBPIXEL_NA) {
+	if (subpixelMode == SUBPIXEL_NA) {  // 若亚像素插值模式为空
 		// simply multiply disparity to the sub-pixel steps
 		// 简单乘一个系数到视差上，作为亚像素视差
 		auto pixel = [&](int, int r, int c) {
@@ -1851,6 +1897,7 @@ void SemiGlobalMatcher::RefineDisparityMap(DisparityMap& disparityMap) const
 		// subpixelMode interpolation when only two values are available
 		// returns fraction of distance from the primary to the other value
 		// 当两者值不同时直接返回当前cost到其他cost的分数，计算分数=0.5*primary/other
+		// primary表示当前像素的视差值代价，other表示相邻像素的视差值代价
 		static real semisubpixel(AccumCost primary, AccumCost other) {
 			return real(0.5)*(static_cast<real>(primary) / static_cast<real>(other));
 		}
@@ -1870,14 +1917,14 @@ void SemiGlobalMatcher::RefineDisparityMap(DisparityMap& disparityMap) const
 			const AccumCost rd(next-center);
 			real x, mult;
 			if (ld < rd) {
-				x = static_cast<real>(ld) / static_cast<real>(rd);
-				mult = real(1);
+				x = static_cast<real>(ld) / static_cast<real>(rd);  // 拟合出来的偏移量
+				mult = real(1);  // 偏移方向
 			} else {
 				x = static_cast<real>(rd) / static_cast<real>(ld);
 				mult = real(-1);
 			}
 			// use the selected subpixelMode function
-			// 选择插值函数
+			// 选择插值函数（也就是不同的拟合函数）
 			real value(0);
 			switch (subpixelMode) {
 			case SUBPIXEL_LINEAR:   value = linear(x); break;
@@ -1896,15 +1943,15 @@ void SemiGlobalMatcher::RefineDisparityMap(DisparityMap& disparityMap) const
 	// 基于代价计算亚像素视差
 	auto pixel = [&](int idx) {
 		const PixelData& pixel = imagePixels[idx];
-		if (pixel.range.numDisp() < 2)
+		if (pixel.range.numDisp() < 2)  // 若视差搜索范围小于2，就不需要考虑插值，以为最优视差值不会同时存在左右的两个相邻的视差值
 			return;
 		Disparity& d = disparityMap(idx);
-		if (d == NO_DISP)
+		if (d == NO_DISP)  // 若最优视差值无效，也不需要考虑插值
 			return;
 		const AccumCost* accums = imageAccumCosts.cdata()+pixel.idx;
 		const int idxDisp(d-pixel.range.minDisp);
 		real disparity((real)d);
-		// 相邻像素拟合一个视差
+		// 相邻像素拟合一个视差（最优视差值accums[idxDisp]左边的相邻视差值accums[idxDisp-1]，最优视差值accums[idxDisp]右边的相邻视差值accums[idxDisp+1]）
 		if (d == pixel.range.minDisp)
 			disparity += Fit::semisubpixel(accums[idxDisp], accums[idxDisp+1]);
 		else if (d+1 == pixel.range.maxDisp)
@@ -1913,6 +1960,8 @@ void SemiGlobalMatcher::RefineDisparityMap(DisparityMap& disparityMap) const
 			disparity += Fit::subpixelMode(accums[idxDisp-1], accums[idxDisp], accums[idxDisp+1], subpixelMode);
 		ASSERT(ROUND2INT(disparity*subpixelSteps) > (int)std::numeric_limits<Disparity>::min());
 		ASSERT(ROUND2INT(disparity*subpixelSteps) < (int)std::numeric_limits<Disparity>::max());
+		// 在对实际视差值进行存储时，需要转为整型（通过ROUND2INT()实现），在转为整型前需要通过乘以视差精度（subpixelSteps）来提高保留的视差精度
+		// 在后续进行深度图计算前，记得再通过处理视差精度，来获取真实视差的近似值。
 		d = (Disparity)ROUND2INT(disparity*subpixelSteps);
 	};
 	ASSERT(threads.IsEmpty());
@@ -1921,8 +1970,8 @@ void SemiGlobalMatcher::RefineDisparityMap(DisparityMap& disparityMap) const
 		FOREACH(i, threads)
 			threads.AddEvent(new EVTPixelAccumInc(disparityMap.size().area(), idxPixel, pixel));
 		WaitThreadWorkers(threads.size());
-	} else
-	for (int r=0; r<disparityMap.rows; ++r)
+	} else  // 对视差图中的每个像素都做处理
+	for (int r=0; r<disparityMap.rows; ++r)  
 		for (int c=0; c<disparityMap.cols; ++c)
 			pixel(r*disparityMap.cols+c);
 }
@@ -1964,19 +2013,20 @@ void SemiGlobalMatcher::DisplayState(const cv::Size& size) const
  */
 void SemiGlobalMatcher::Depth2DisparityMap(const DepthMap& depthMap, const Matrix3x3& invH, const Matrix4x4& invQ, Disparity subpixelSteps, DisparityMap& disparityMap)
 {
-	auto pixel = [&](int, int r, int c) {
+	auto pixel = [&](int, int r, int c) {  // 逐像素处理
 		// rc加half窗口的原因是视差图是有效像素开始的起始是从（halfWindowSizeX，halfWindowSizeY）开始的而非（0，0）
 		const ImageRef x(c+halfWindowSizeX,r+halfWindowSizeY); Point2f u;
 		//把校正图像上的像素坐标转到原图坐标上
-		ProjectVertex_3x3_2_2(invH.val, x.ptr(), u.ptr());
+		ProjectVertex_3x3_2_2(invH.val, x.ptr(), u.ptr());  // 通过H矩阵获取校正后的坐标系下的uv坐标
 		float depth, disparity;
 		//取深度值depth并转到视差上
 		if (!depthMap.sampleSafe(depth, u, [](Depth d) { return d > 0; }) || !Image::Depth2Disparity(invQ, u, depth, disparity))
 			disparityMap(r,c) = NO_DISP;
 		else
-			disparityMap(r,c) = (Disparity)ROUND2INT(disparity*subpixelSteps);
+			disparityMap(r,c) = (Disparity)ROUND2INT(disparity*subpixelSteps); // subpixelSteps一般默认为1
 	};
 	ASSERT(threads.IsEmpty());
+	// 多线程，逐个处理每个像素
 	if (!threads.empty()) {
 		volatile Thread::safe_t idxPixel(-1);
 		FOREACH(i, threads)

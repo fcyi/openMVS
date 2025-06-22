@@ -162,6 +162,9 @@ public:
 	inline Type GetEnd() const { return End; }
 
 	// Returns the approximate permille
+	// 根据直方图的统计分布，选择permille的上分位数作为最大值。
+	// 例如虽然直方图的统计范围为[0, a]，若[0, b]上所包含的数据量占比为permille，则将b作为最大值。
+	// 一般permille很大，所以大部分的点都会落在[0, b]上，此时，若b << a，则使用a作为最大值进行归一化是不够合理的，因为容易受到噪声影响。
 	Type GetApproximatePermille(float permille) const {
 		ASSERT(permille >= 0.f && permille <= 1.f);
 		size_t NumValues(0);

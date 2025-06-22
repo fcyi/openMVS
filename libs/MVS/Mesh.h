@@ -90,7 +90,8 @@ public:
 	typedef AABB3f Box;
 
 	// used to render a mesh
-	typedef TOctree<VertexArr,Vertex::Type,3> Octree;
+	typedef TOctree<VertexArr,Vertex::Type,3> Octree;  // 八叉树
+	// FacesInserter主要用于插值
 	struct FacesInserter {
 		FaceIdxArr& cameraFaces;
 		FacesInserter(FaceIdxArr& _cameraFaces)
@@ -351,6 +352,8 @@ struct TRasterMesh : TRasterMeshBase<DERIVED> {
 		}
 		// ??? 不知道为啥？新版代码里面去掉了基于法向量进行的face朝向的检测步骤
 		// draw triangle
+		// 将三角面片内的像素栅格化插值
+		// 此处的*this会调用Raster这个函数，若此类的子类中对Raster进行重写，则该子类调用的就是重写之后的Raster
 		Image8U3::RasterizeTriangleBary(pti[0], pti[1], pti[2], *this);
 	}
 };

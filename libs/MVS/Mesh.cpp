@@ -230,7 +230,7 @@ void Mesh::ListIncidenteVertices()
 			VertexIdxArr& verts(vertexVertices[face[v]]);
 			for (int i=1; i<3; ++i) {
 				const VIndex idxVert(face[(v+i)%3]);
-				if (verts.Find(idxVert) == VertexIdxArr::NO_INDEX)
+				if (verts.Find(idxVert) == VertexIdxArr::NO_INDEX)  // 由于面片之间可能共享同一条边、点，为此需要避免重复插入同一个相邻顶点
 					verts.emplace_back(idxVert);
 			}
 		}
@@ -247,7 +247,7 @@ void Mesh::ListIncidenteFaces()
 		const Face& face = faces[i];
 		for (int v=0; v<3; ++v) {
 			ASSERT(vertexFaces[face[v]].Find(i) == FaceIdxArr::NO_INDEX);
-			vertexFaces[face[v]].emplace_back(i);
+			vertexFaces[face[v]].emplace_back(i);  // face[v]表示面片face的第v个顶点的ID，在vertexFaces中该顶点所对应的ID处插入面片face所对应的索引i
 		}
 	}
 }
@@ -724,7 +724,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		return;
 	TD_TIMER_STARTD();
 	// create VCG mesh
-	CLEAN::Mesh mesh;
+	CLEAN::Mesh mesh;  // 将Mesh结构转为VCG所要求的格式
 	{
 		CLEAN::Mesh::VertexIterator vi = vcg::tri::Allocator<CLEAN::Mesh>::AddVertices(mesh, vertices.size());
 		FOREACHPTR(pVert, vertices) {
@@ -757,7 +757,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		faces.Release();
 	}
 
-	// decimate mesh
+	// decimate mesh。对mesh进行采样
 	if (fDecimate < 1) {
 		ASSERT(fDecimate > 0);
 		const int nZeroAreaFaces = vcg::tri::Clean<CLEAN::Mesh>::RemoveZeroAreaFace(mesh);
@@ -838,7 +838,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		vcg::tri::UpdateTopology<CLEAN::Mesh>::AllocateEdge(mesh);
 	}
 
-	// remove spurious components
+	// remove spurious components。面片删除
 	if (fSpurious > 0) {
 		FloatArr edgeLens(0, mesh.EN());
 		for (CLEAN::Mesh::EdgeIterator ei=mesh.edge.begin(); ei!=mesh.edge.end(); ++ei) {
@@ -864,7 +864,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		DEBUG_ULTIMATE("Removed %d connected components out of %d", delInfo.second, delInfo.first);
 	}
 
-	// remove spikes
+	// remove spikes。将较大、狭长的三角面片进行移除
 	if (bRemoveSpikes) {
 		int nTotalSpikes(0);
 		vcg::tri::RequireVFAdjacency(mesh);
@@ -906,7 +906,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		DEBUG_ULTIMATE("Removed %d spikes", nTotalSpikes);
 	}
 
-	// close holes
+	// close holes。孔洞填充
 	if (nCloseHoles > 0) {
 		if (fSpurious <= 0 && !bRemoveSpikes)
 			vcg::tri::UpdateTopology<CLEAN::Mesh>::FaceFace(mesh);
@@ -975,7 +975,7 @@ void Mesh::Clean(float fDecimate, float fSpurious, bool bRemoveSpikes, unsigned 
 		#endif
 	}
 
-	// import VCG mesh
+	// import VCG mesh。将mesh从VCG格式转为MVS中定义的mesh格式
 	{
 		ASSERT(vertices.empty() && faces.empty());
 		vertices.Reserve(mesh.VN());

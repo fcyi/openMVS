@@ -199,10 +199,12 @@ Camera Image::GetCamera(const PlatformArr& platforms, const Image8U::Size& resol
 
 	// compute the normalized absolute camera pose
 	// 计算归一化的相机位姿（原因是我们输入的相机内参f cx cy是做过归一化的即均乘了一个系数：scale=1/原图的最长边）
+	// !!! 以后涉及OpenMVS的接口时，关于输入的相机参数的一定要注意需要进行此处提及的归一化，否则后续处理都会有问题
 	const Platform& platform = platforms[platformID];
 	Camera camera(platform.GetCamera(cameraID, poseID));
 
 	// compute the unnormalized camera
+	// 也就是对焦距进行缩放，scale*max(resolution.width, resolution.height) = max(resolution.width, resolution.height)/max(image.width, image.height)
 	// 计算未归一化的相机参数即[f/cx/cy]*scale*max(resolution.width, resolution.height)
 	camera.K = camera.GetK<REAL>(resolution.width, resolution.height);
 	// 计算投影矩阵
@@ -299,7 +301,7 @@ bool Image::StereoRectifyImages(const Image& image1, const Image& image2, const 
 		return false;
 
 	// adjust rectified camera matrices such that the entire area common to both source images is contained in the rectified images
-	// 调整校正后的相机矩阵，使两个源图像的公共区域都包含在校正后的图像中
+	// 调整校正后的相机矩阵（若输入一些匹配点就会对相应的相机矩阵进行调整），使两个源图像的公共区域都包含在校正后的图像中
 	cv::Size size1(image1.GetSize()), size2(image2.GetSize());
 	if (!points1.empty())
 		Camera::SetStereoRectificationROI(points1, size1, image1.camera, points2, size2, image2.camera, R1, R2, K1, K2);
@@ -307,8 +309,8 @@ bool Image::StereoRectifyImages(const Image& image1, const Image& image2, const 
 
 	// compute rectification homography (from original to rectified image)
 	// 计算校正的单应性矩阵（描述的是两个图像像素坐标的转换矩阵H[u,v,1]^t=[u',v',1]^t）(从原始图像到校正图像)
-	const Matrix3x3 H1(K1 * R1 * image1.camera.GetInvK()); H = H1;
-	const Matrix3x3 H2(K2 * R2 * image2.camera.GetInvK());
+	const Matrix3x3 H1(K1 * R1 * image1.camera.GetInvK()); H = H1;  // 左目视图
+	const Matrix3x3 H2(K2 * R2 * image2.camera.GetInvK());          // 右目视图
 
 	#if 0
 	{	// display epipolar lines before and after rectification
@@ -351,6 +353,8 @@ bool Image::StereoRectifyImages(const Image& image1, const Image& image2, const 
 			cv::drawContours(mask, contours, 0, cv::Scalar(255), cv::FILLED);
 		}
 	};
+	// 标记原图像中有效的像素，有效的像素指的是原图像中在校正后的图像坐标系下有对应像素的那些像素，即原图像中可以用来计算视差的位置
+	// 此处的计算也是基于单应性矩阵进行的，根据size1/size2和H1/H2，将像素从校正后的像素坐标系转换到校正前的像素坐标系，获取其中的mask
 	Compute::Mask(mask1, size1, image1.GetSize(), H1);
 	Compute::Mask(mask2, size2, image2.GetSize(), H2);
 
@@ -362,16 +366,19 @@ bool Image::StereoRectifyImages(const Image& image1, const Image& image2, const 
 	ASSERT(ISEQUAL(K1(1,1),K2(1,1)));
 	Q = Matrix4x4::ZERO;
 	//   Q * [x, y, disparity, 1] = [X, Y, Z, 1] * w
+	// [x, y]校正后的像素坐标，disparity校正后的视差，[X,Y,Z]校正前的相机坐标系下的坐标，其中Z就表示在校正前的相机坐标系下的深度值
+	// 具体推导可以参见第10讲中的视差图转深度图的内容
 	ASSERT(ISEQUAL(K1(0,0),K2(0,0)) && ISZERO(K1(0,1)) && ISZERO(K2(0,1)));
 	Q(0,0) = Q(1,1) = REAL(1);
-	Q(0,3) = -K1(0,2);
-	Q(1,3) = -K1(1,2);
-	Q(2,3) =  K1(0,0);
+	Q(0,3) = -K1(0,2);  // -cx
+	Q(1,3) = -K1(1,2);  // -cy
+	Q(2,3) =  K1(0,0);  // f
 	Q(3,2) = -REAL(1)/t;
 	Q(3,3) =  (K1(0,2)-K2(0,2))/t;
 
 	// compute Q that converts disparity from rectified to depth in original image
 	// 计算将视差从校正到原始图像深度转换的Q值
+	// 具体推导可以参见第10讲中的视差图转深度图的内容
 	Matrix4x4 P(Matrix4x4::IDENTITY);
 	cv::Mat(image1.camera.K*R1.t()).copyTo(cv::Mat(4,4,cv::DataType<Matrix4x4::Type>::type,P.val)(cv::Rect(0,0,3,3)));
 	Q = P*Q;

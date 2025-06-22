@@ -418,6 +418,8 @@ DepthEstimator::DepthEstimator(
 
 // center a patch of given size on the segment
 //判断像素点x可以组建一个patch。
+// 由于Patch有一个窗口大小2*nSizeHalfWindow+1，这个预设窗口预设为5，其数值越小，速度越快，
+// 此处就是判断，以像素坐标x为中心的窗口所覆盖的像素是否都在图像内
 bool DepthEstimator::PreparePixelPatch(const ImageRef& x)
 {
 	x0 = x;
@@ -426,6 +428,8 @@ bool DepthEstimator::PreparePixelPatch(const ImageRef& x)
 }
 // fetch the patch pixel values in the main image
 // 在reference图像上计算patch 值
+// 对于当前帧上的一个像素，考虑其所可能对应的patch中哪一个最合适，
+// 也是基于该patch对应于该像素以及其在相应相邻参考帧上投影点的匹配代价（此处使用带权重的ncc进行度量）
 bool DepthEstimator::FillPixelPatch()
 {
 	#if DENSE_NCC != DENSE_NCC_WEIGHTED
@@ -444,11 +448,13 @@ bool DepthEstimator::FillPixelPatch()
 	//weight=exp(-(wc+wd))
 	//sumWeights=Σweight
 	//看课件 ：normSq0_temp=Σ（weight*image0.image(x0.y+i, x0.x+j)）
-	Weight& w = weightMap0[x0.y*image0.image.width()+x0.x];
-	if (w.normSq0 == 0) {
+	// 其中，image0表示要计算深度信息的当前帧，image1表示要与当前帧进行匹配的邻域帧（即目标帧）
+	Weight& w = weightMap0[x0.y*image0.image.width()+x0.x];  // 当前要处理的像素
+	if (w.normSq0 == 0) {  // 不等于0则表示已经计算过了，所以不需要再进行计算
 		w.sumWeights = 0;
 		int n = 0;
-		const float colCenter = image0.image(x0);
+		const float colCenter = image0.image(x0);  // patch中心（即当前像素）的灰度值
+		// 对patch窗口内的像素进行处理
 		for (int i=-nSizeHalfWindow; i<=nSizeHalfWindow; i+=nSizeStep) {
 			for (int j=-nSizeHalfWindow; j<=nSizeHalfWindow; j+=nSizeStep) {
 				Weight::Pixel& pw = w.weights[n++];
@@ -459,7 +465,7 @@ bool DepthEstimator::FillPixelPatch()
 			}
 		}
 		ASSERT(n == nTexels);
-		const float tm(w.normSq0/w.sumWeights);
+		const float tm(w.normSq0/w.sumWeights);  // patch上像素的颜色*相应权重的累加和的平均值
 		w.normSq0 = 0;
 		//公式 w.normSq0=Σweight*（image0.image(x0.y+i, x0.x+j)-normSq0_temp/sumWeights)^2
 		//tempWeight=Σweight*（image0.image(x0.y+i, x0.x+j)-normSq0_temp/sumWeights)
@@ -474,6 +480,7 @@ bool DepthEstimator::FillPixelPatch()
 	#endif
 	if (normSq0 < thMagnitudeSq && (lowResDepthMap.empty() || lowResDepthMap(x0) <= 0))
 		return false;
+	// 将当前像素从像素坐标系投射到相机坐标系，由于当前像素深度未知，为此，将当前像素的深度假设为1
 	X0 = image0.camera.TransformPointI2C(Cast<REAL>(x0));
 	return true;
 }
@@ -483,10 +490,12 @@ bool DepthEstimator::FillPixelPatch()
 float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth depth, const Normal& normal)
 {
 	// center a patch of given size on the segment and fetch the pixel values in the target image
-	//计算单应性矩阵参考Accurate Multiple View 3D Reconstruction Using Patch-Based Stereo for Large-Scale Scenes 公式5
+	//计算单应性矩阵（表示两个图像上的像素坐标之间的转换，此处用此矩阵来获取当前帧上的像素点在邻域帧上的投影点，进而计算相应的ncc值，判断二者是否匹配），
+	// 参考Accurate Multiple View 3D Reconstruction Using Patch-Based Stereo for Large-Scale Scenes 公式5
+	// 此处的image1就是表示用于与当前帧进行匹配的邻域帧
 	Matrix3x3f H(ComputeHomographyMatrix(image1, depth, normal));
 	Point3f X;
-	// 投影patch最左上角点到target image得到坐标X
+	// 通过H投影patch最左上角点到target image得到坐标X
 	ProjectVertex_3x3_2_3(H.val, Point2f(float(x0.x-nSizeHalfWindow),float(x0.y-nSizeHalfWindow)).ptr(), X.ptr());
 	Point3f baseX(X);
 	H *= float(nSizeStep);
@@ -499,13 +508,13 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 	const Weight& w = weightMap0[x0.y*image0.image.width()+x0.x];
 	#endif
 	// 计算target image 的ncc值
-	// nSizeStep 抽像素计算不是窗口内每个点都计算。 
+	// 抽像素计算不是窗口内每个点都计算。nSizeStep为Patch内计算ncc像素的位置间隔 
 	for (int i=-nSizeHalfWindow; i<=nSizeHalfWindow; i+=nSizeStep) {
 		for (int j=-nSizeHalfWindow; j<=nSizeHalfWindow; j+=nSizeStep) {
-			const Point2f pt(X);
-			if (!image1.image.isInsideWithBorder<float,1>(pt))
+			const Point2f pt(X);  // X在邻域帧上的像素坐标pt
+			if (!image1.image.isInsideWithBorder<float,1>(pt))  // 判断pt是否在邻域帧的边界上
 				return thRobust;
-			const float v(image1.image.sample(pt));
+			const float v(image1.image.sample(pt));  // 使用.sample()对浮点数坐标进行整数化（即采样），此处的v相当于g(x)-g_avg
 			#if DENSE_NCC == DENSE_NCC_FAST
 			sum += v;
 			sumSq += SQUARE(v);
@@ -520,7 +529,10 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 			sum += texels1(n++)=v;
 			#endif
 			// H矩阵是3*3矩阵每次像素上平移一个nsizestep单位，推导出来新的坐标如下：见笔记详细推导
-			X.x += H[0]; X.y += H[3]; X.z += H[6];
+			// 这种投影坐标的获取方式效率更高
+			// 也就是说，对于当前帧上每一个patch中的像素点，其在邻域帧上的相机坐标，除了patch上的第一个像素点需要重新投影外，
+			// 后续的像素点的投影位置可以通过下面的式子获取，具体推导参见课件
+			X.x += H[0]; X.y += H[3]; X.z += H[6];  // 这个式子是对于每一个patch上的每一行像素点而言的，因此对于后续行上的像素点，需要对该行上的第一个像素点（即后续的baseX）进行更新
 		}
 		baseX.x += H[1]; baseX.y += H[4]; baseX.z += H[7];
 		X = baseX;
@@ -541,18 +553,20 @@ float DepthEstimator::ScorePixelImage(const DepthData::ViewData& image1, Depth d
 	#if DENSE_NCC == DENSE_NCC_DEFAULT
 	const float num(texels0.dot(texels1));
 	#endif
-	const float ncc(CLAMP(num/SQRT(nrmSq), -1.f, 1.f));
+	const float ncc(CLAMP(num/SQRT(nrmSq), -1.f, 1.f));  // ncc值越大，一致性越高，匹配代价越小，即相似性越高
 	float score(1.f-ncc);
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	// encourage smoothness
-	//!!!增加平滑因子
+	//!!!增加平滑因子（包含平面平滑因子和法向量平滑因子）
 	for (const NeighborEstimate& neighbor: neighborsClose) {
 		ASSERT(neighbor.depth > 0);
+		// 希望邻域上的对应的像素在平面上的深度值与当前像素的深度值尽可能一致
 		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 		const float factorDepth(DENSE_EXP(SQUARE(plane.Distance(neighbor.X)/depth) * smoothSigmaDepth));
 		#else
 		const float factorDepth(DENSE_EXP(SQUARE((depth-neighbor.depth)/depth) * smoothSigmaDepth));
 		#endif
+		// 希望邻域上的对应的像素在平面上的法向量与当前像素的法向量尽可能一致，即希望法向量尽可能平滑
 		const float factorNormal(DENSE_EXP(SQUARE(ACOS(ComputeAngle(normal.ptr(), neighbor.normal.ptr()))) * smoothSigmaNormal));
 		score *= (1.f - smoothBonusDepth * factorDepth) * (1.f - smoothBonusNormal * factorNormal);
 	}
@@ -595,9 +609,11 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 	ASSERT(depth > 0 && normal.dot(Cast<float>(X0)) <= 0);
 	// compute score for this pixel as seen in each view
 	// 计算当前像素在每个邻域view的匹配代价
+	// 多目立体匹配和双目立体匹配虽然本质上都是两帧之间计算三角关系以进行匹配，但是若是多目，则存在多个参考帧，因此可以产生多个三角关系以及对应的匹配代价，
+	// 因此具有更多的参考信息
 	ASSERT(scores.size() == images.size());
-	FOREACH(idxView, images)  // images存放的是邻域views
-		scores[idxView] = ScorePixelImage(images[idxView], depth, normal);
+	FOREACH(idxView, images)  // images存放的是邻域views（若在全局优化时找到最优邻域帧，则仅有一帧，否则有若干帧）
+		scores[idxView] = ScorePixelImage(images[idxView], depth, normal);  // scores中存储邻域帧对应的分数，对于任何一个平面，有了中心点和法向量就可对其进行表示，这里面深度为中心点提供三维信息
 	#if DENSE_AGGNCC == DENSE_AGGNCC_NTH
 	// set score as the nth element
 	// 直接从邻域view的score中返回第N小的score
@@ -663,6 +679,7 @@ float DepthEstimator::ScorePixel(Depth depth, const Normal& normal)
 void DepthEstimator::ProcessPixel(IDX idx)
 {
 	// compute pixel coordinates from pixel index and its neighbors
+	// 此处的dir表示像素处理的顺序是从左上到右下（LT2RB）还是从右下到左上（RB2LT）
 	ASSERT(dir == LT2RB || dir == RB2LT);
 	//!!! FillPixelPatch不应该再调用，对效果不会有影响但是重复计算耗时。该函数是准备reference image的每个像素patch的,只需要计算一次。在ScoreDepthMapTmp中做初始化已经调用过。
 	if (!PreparePixelPatch(dir == LT2RB ? coords[idx] : coords[coords.GetSize()-1-idx]) || !FillPixelPatch())
@@ -673,6 +690,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	neighborsClose.Empty();
 	#endif
+	// 记录要进行迭代传播的邻域信息
 	// 从左上到右下遍历
 	if (dir == LT2RB) {
 		// direction from left-top to right-bottom corner
@@ -682,7 +700,8 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			if (ndepth > 0) {
 				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
-				neighbors.emplace_back(nx);
+				neighbors.emplace_back(nx);  // 存储patch上的邻域坐标nx
+				// neighborsClose是用于平滑、滤波（存储了邻域像素的深度值、法向量以及在相机坐标系下的坐标）
 				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
 					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
@@ -699,7 +718,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			if (ndepth > 0) {
 				#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 				ASSERT(ISEQUAL(norm(normalMap0(nx)), 1.f));
-				neighbors.emplace_back(nx);
+				neighbors.emplace_back(nx);  // 存储patch上的邻域坐标nx
 				neighborsClose.emplace_back(NeighborEstimate{ndepth,normalMap0(nx)
 					#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 					, Cast<float>(image0.camera.TransformPointI2C(Point3(nx, ndepth)))
@@ -737,7 +756,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 			}
 		}
 		#endif
-	} else {  //从右下到左上遍历
+	} else {  //从右下到左上遍历，与从左上到右下遍历的过程类似
 		ASSERT(dir == RB2LT);
 		// direction from right-bottom to left-top corner
 		if (x0.x < size.width-nSizeHalfWindow) {
@@ -806,7 +825,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 	Depth& depth = depthMap0(x0);
 	Normal& normal = normalMap0(x0);
 	const Normal viewDir(Cast<float>(X0));
-	ASSERT(depth > 0 && normal.dot(viewDir) <= 0);
+	ASSERT(depth > 0 && normal.dot(viewDir) <= 0);  //  viewDir表示当前像素所在的图像帧的相机光心与该像素的连线形成的观测向量
 	#if DENSE_REFINE == DENSE_REFINE_ITER
 	// check if any of the neighbor estimates are better then the current estimate
 	// 邻域传播，检查邻域的估计是否比当前的估计好
@@ -822,15 +841,16 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 		NeighborEstimate neighbor = neighborsClose[n];
 		#endif
-		// 计算x0在邻域patch平面上的depth值
+		// 计算x0在邻域patch平面上的depth值（邻域的深度值和法向量其实就足够表示邻域patch）
+		// 邻域传播就是假设邻域patch是当前像素x0的所在平面，先计算x0在邻域patch上的深度值，进而投影到邻域帧计算匹配代价
 		neighbor.depth = InterpolatePixel(nx, neighbor.depth, neighbor.normal);
 		CorrectNormal(neighbor.normal);
 		ASSERT(neighbor.depth > 0 && neighbor.normal.dot(viewDir) <= 0);
 		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
-		InitPlane(neighbor.depth, neighbor.normal);
+		InitPlane(neighbor.depth, neighbor.normal);  // 根据邻域深度值和法向量初始化用于平面平滑的平面
 		#endif
 		// 计算新平面的匹配代价
-		const float nconf(ScorePixel(neighbor.depth, neighbor.normal));
+		const float nconf(ScorePixel(neighbor.depth, neighbor.normal));  // 得到深度值和法向量后可以再次对置信度图进行计算
 		ASSERT(nconf >= 0 && nconf <= 2);
 		// 如果新平面的代价更小，则用新平面替换原来的
 		if (conf > nconf) {
@@ -841,16 +861,18 @@ void DepthEstimator::ProcessPixel(IDX idx)
 	}
 	// try random values around the current estimate in order to refine it
 	// 随机分配：在当前depth值下上下加随机值来找最优值来进一步优化
+	// 此处的conf其实表示的是代价而非置信度（置信度与代价成反比）
+	// thConfSmall、thConfBig以及thConfRand都表示代价的阈值
 	unsigned idxScaleRange(0);
 	RefineIters:
-	// idxScaleRange越小随机区间越大，如果conf比较高说明当前深度值准确度越低，所以随机区间应该大些才有可能找到更准确的值。
+	// idxScaleRange越小，随机区间越大，如果conf比较高说明当前深度值准确度越低，所以随机区间应该大些才有可能找到更准确的值。
 	if (conf <= thConfSmall)
 		idxScaleRange = 2;
 	else if (conf <= thConfBig)
 		idxScaleRange = 1;
 	else if (conf >= thConfRand) {
 		// try completely random values in order to find an initial estimate
-		// 尝试完全随机的值，以找到初始估计值
+		// 此时认为估计到的深度图完全不可信，需要重新初始化，去寻找一个代价小于thConfRand的深度值。尝试完全随机的值，以找到初始估计值
 		#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 		neighborsClose.Empty();
 		#endif
@@ -870,14 +892,16 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		}
 		return;
 	}
+	// scaleRanges表示一个尺度区间的比例值
 	float scaleRange(scaleRanges[idxScaleRange]);  // 随机区间的scale 
 	// OPTDENSE::fRandomDepthRatio：深度范围比率当前估计的随机平面分配
+	// 也就是深度的随机幅度depthRange为depth*OPTDENSE::fRandomDepthRatio
 	const float depthRange(MaxDepthDifference(depth, OPTDENSE::fRandomDepthRatio));
 	Point2f p;
 	// 将单位法向量转成两个方位角，笔记有图推导
 	Normal2Dir(normal, p);
 	Normal nnormal;
-	for (unsigned iter=0; iter<OPTDENSE::nRandomIters; ++iter) {
+	for (unsigned iter=0; iter<OPTDENSE::nRandomIters; ++iter) {  // 若希望效果更好，可以尝试加大随机迭代次数OPTDENSE::nRandomIters，但是这也会增大计算量
 		// 根据设置的区间[depth- depthRange*scaleRange,depth+depthRange*scaleRange]随机生成一个深度值
 		const Depth ndepth(rnd.randomMeanRange(depth, depthRange*scaleRange));
 		if (!ISINSIDE(ndepth, dMin, dMax))
@@ -885,7 +909,7 @@ void DepthEstimator::ProcessPixel(IDX idx)
 		// 法向量也在区间内随机生成一个值同上
 		const Point2f np(rnd.randomMeanRange(p.x, angle1Range*scaleRange), rnd.randomMeanRange(p.y, angle2Range*scaleRange));
 		Dir2Normal(np, nnormal);
-		if (nnormal.dot(viewDir) >= 0)
+		if (nnormal.dot(viewDir) >= 0)  // 法向量是否处于可视的范围
 			continue;
 		#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_PLANE
 		// 平面初始化
@@ -976,17 +1000,24 @@ Depth DepthEstimator::InterpolatePixel(const ImageRef& nx, Depth depth, const No
 	ASSERT(depth > 0 && normal.dot(image0.camera.TransformPointI2C(Cast<REAL>(nx))) <= 0);
 	Depth depthNew;
 	#if 1
-	// 详细推导见课件
+	// 详细推导见课件（相当于后面那种方法的简化版本）
 	// compute as intersection of the lines
 	// {(x1, y1), (x2, y2)} from neighbor's 3D point towards normal direction
 	// and
 	// {(0, 0), (x4, 1)} from camera center towards current pixel direction
 	// in the x or y plane
-	if (x0.x == nx.x) {
+	// 无论遍历方向是从左上到右下还是从右下到左上，从patch上考虑的邻域像素与当前像素（即patch的中心像素）要么x相同，要么y相同
+	// 若x相同，则忽略x轴，只考虑y轴和z轴，即若x0与nx的x轴坐标相同，则只需在yoz平面上计算深度
+	// 若y相同，则忽略y轴，只考虑x轴和z轴，即若x0与nx的y轴坐标相同，则只需在xoz平面上计算深度
+	if (x0.x == nx.x) {  
+		// 假设当前像素x0深度值为1的时候，计算其在相机坐标系下的坐标
+		// 由于只考虑y和z轴，而z其实就是深度值depth（此处假设为1），因此此处就只对y轴进行转换
 		const float nx1((float)(((REAL)x0.y - image0.camera.K(1,2)) / image0.camera.K(1,1)));
-		const float denom(normal.z + nx1 * normal.y);
+		const float denom(normal.z + nx1 * normal.y);  // 当前像素与法向量点乘
 		if (ISZERO(denom))
 			return depth;
+		// 邻域像素nx在相机坐标系下的坐标
+		// 像素坐标转相机坐标，由于只考虑y和z轴，而z其实就是深度值depth，因此此处就只对y轴进行转换
 		const float x1((float)(((REAL)nx.y - image0.camera.K(1,2)) / image0.camera.K(1,1)));
 		const float nom(depth * (normal.z + x1 * normal.y));
 		depthNew = nom / denom;
@@ -1003,7 +1034,8 @@ Depth DepthEstimator::InterpolatePixel(const ImageRef& nx, Depth depth, const No
 	}
 	#else
 	// compute as the ray - plane intersection
-	// 利用nx=d平面方程计算depth。x=depthnew*X0 
+	// 利用nx=d平面方程计算depth。x=depthnew*X0，d指的是patch上X0的投影点x到原点（即当前帧的相机光心）的距离，x表示当前像素点X0在邻域帧平面patch上的投影点，n表示邻域帧的法向量，
+	// patch上所有的点都可以通过nx = d算出平面patch与原点之间的距离,因为同一平面上所有的点在该平面上的法向量上的投影都是相同的，利用这一点与邻域帧的patch上的对应匹配点的深度值，可以估算出相应的当前帧上当前像素的深度值
 	{
 		#if 0
 		const Plane plane(Cast<REAL>(normal), image0.camera.TransformPointI2C(Point3(nx, depth)));
@@ -1111,7 +1143,8 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 	projs.reserve(mesh.vertices.capacity());
 	Delaunay delaunay;
 	for (uint32_t idx: points) {
-		// 计算点云在相机坐标系下的坐标xyz
+		// 计算点云在相机坐标系下的坐标pt，即(x, y, z)，以及在归一化平面上的坐标(pt.x/pt.z, pt.y/pt.z, 1)
+		// pt.z相机坐标系下的深度值
 		const Point3f pt(image.camera.ProjectPointP3(pointcloud.points[idx]));
 		const Point3f x(pt.x/pt.z, pt.y/pt.z, pt.z);
 		// 插入(u,v,d)构建三角网格
@@ -1124,7 +1157,8 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 		if (depthBounds.second < pt.z)
 			depthBounds.second = pt.z;
 	}
-	// if full size depth-map requested
+	// if full size depth-map requested（如果要获取较为完整的初始深度图，当图像四个角度没有投射到的稀疏点时，需要往这四个角落上插入点，也就是所谓的边界点、角点）
+	// 具体说明可以参看讲义。
 	// 如果稀疏点在图像四个角落没值，又因为三角化是一个凸包无法覆盖整个图像，所以如果需要整个图像都能初始化深度，则可以添加角点用深度平均值表示
 	// 角点深度的深度值直接取平均值其实是不符合模型的真实深度的，所以进行优化：
 	// 加入四个角点后划分三角网格后，查找距离角点最近的三个面，分别计算在每个面所在所在平面投影到角点的深度值和三角面中心距离
@@ -1139,28 +1173,32 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 		for (const Point2f x: {Point2i(0, 0), Point2i(image.image.width()-1, 0), Point2i(0, image.image.height()-1), Point2i(image.image.width()-1, image.image.height()-1)}) {
 			const Mesh::VIndex i(mesh.vertices.size() - idxFirstVertex);
 			(vcorners[i] = delaunay.insert(CPoint(x.x, x.y)))->info() = mesh.vertices.size();
-			mesh.vertices.emplace_back(image.camera.TransformPointI2C(Point3f(x, image.pImageData->avgDepth)));
+			mesh.vertices.emplace_back(image.camera.TransformPointI2C(Point3f(x, image.pImageData->avgDepth)));  // 边界点的深度值设为平均深度值
 			projs.emplace_back(x);
 		}
 		// compute average depth from the closest 3 directly connected faces,
 		// weighted by the distance
 		// 计算距离角点最近的三个平面的平均深度，权重是用face像素中心到角点距离来计算
 		for (int i=0; i<4; ++i) {  // 四个角点逐个处理
-			const VertexHandle vcorner(vcorners[i]);
+			const VertexHandle vcorner(vcorners[i]);  // 三角划分之后，凸包里面的点的位置，也可以理解为三角面片中角点的ID
 			// 计算包含该角点的faces
 			FaceCirculator cfc(delaunay.incident_faces(vcorner));
-			ASSERT(cfc != 0);  // 如果没有找到face则跳过直接处理下一个点，正常情况下不够发生，normally this should never happen
+			// 如果没有找到face则跳过直接处理下一个点，正常情况下不够发生，normally this should never happen
+			// 因为只要有稀疏点，插入的边界点肯定可以与之连接，进而形成面片
+			ASSERT(cfc != 0);
 			const FaceCirculator done(cfc);
 			// 角点的uv坐标
-			const Point2d& posA = reinterpret_cast<const Point2d&>(vcorner->point());
+			const Point2d& posA = reinterpret_cast<const Point2d&>(vcorner->point());  // 这里使用引用，当posA中的数据发生改变，vcorner->point()中的数据也会发生改变
 			// 相机原点出发穿过角点（k*[u,v,1]）所在射线，深度为任意值时均在这条射线上
 			const Ray3d rayA(Point3d::ZERO, normalized(Cast<REAL>(mesh.vertices[vcorner->info()])));
 			typedef TIndexScore<float,float> DepthDist;
-			CLISTDEF0(DepthDist) depths(0, numPoints);  // 存储角点在三个面上投影的深度
+			// 存储角点在三个面上投影的深度（找到包含该角点并且不包含其他角点的所有面片之后，找这些面片的邻域面片，之后从这些邻域面片中选3个，
+			// 将该角点投射（从相机原点出发穿过该角点的投射方式）到这些选中的邻域面片上，邻域面片上的投射点即反应了该角点的深度）
+			CLISTDEF0(DepthDist) depths(0, numPoints); 
 			do {
 				// 计算邻域face
 				const FaceHandle fc(cfc->neighbor(cfc->index(vcorner)));
-				// 如果fc是个无限face（一个顶点在无限远处的face）跳过
+				// 如果fc是个无限face（在CGL中为一个顶点在无限远处的face）跳过
 				if (delaunay.is_infinite(fc))
 					continue;
 				// 如果邻域face的顶点包含上面四个角点中任意一个也要跳过，因为四个角点都是待优化点不能参与当前角点的优化
@@ -1170,19 +1208,20 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 				// compute the depth as the intersection of the corner ray with
 				// the plane defined by the face's vertices
 				// 计算深度:角点ray与平面的交点（见课件图示）
-				const Planed planeB(
+				const Planed planeB(  // 取fc的三个顶点在相机坐标系下的坐标（因为此处的面片都是三角面片）
 					Cast<REAL>(mesh.vertices[fc->vertex(0)->info()]),
 					Cast<REAL>(mesh.vertices[fc->vertex(1)->info()]),
 					Cast<REAL>(mesh.vertices[fc->vertex(2)->info()])
 				);
-				// 计算角点ray与平面的交点
+				// 计算角点ray与平面的交点，poszB是该角点在planeB上的投影点（或者说是在该角点所对应的图像帧的相机坐标系下的坐标），poszB.z是其深度值
 				const Point3d poszB(rayA.Intersects(planeB));
 				// 如果深度小于0 （点在相机背面）相机不可能看到所以不合理
 				if (poszB.z <= 0)
 					continue;
-				// 平面三个顶点（相机坐标系下），取face的中心点
+				// 平面三个顶点（相机坐标系下），
+				// 取face的中心点（邻域面片的中心距离角点越近，则其对应的深度权重也越大，因为距离越近，深度值越相似）
 				const Point2d posB((
-					reinterpret_cast<const Point2d&>(fc->vertex(0)->point())+
+					reinterpret_cast<const Point2d&>(fc->vertex(0)->point())+  // 三个面的中心的uv坐标 
 					reinterpret_cast<const Point2d&>(fc->vertex(1)->point())+
 					reinterpret_cast<const Point2d&>(fc->vertex(2)->point()))/3.f
 				);
@@ -1199,7 +1238,7 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
 			vecDists *= 1.f/vecDists.sum();
 			FloatMap vecDepths(&depths[0].idx, numPoints);
 			const float depth(vecDepths.dot(vecDists));
-			mesh.vertices[idxFirstVertex+i] = image.camera.TransformPointI2C(Point3(posA, depth));
+			mesh.vertices[idxFirstVertex+i] = image.camera.TransformPointI2C(Point3(posA, depth));  // 计算出的角点深度值
 		}
 	}
 	mesh.faces.reserve(Mesh::FIndex(std::distance(delaunay.finite_faces_begin(),delaunay.finite_faces_end())));
@@ -1217,7 +1256,7 @@ std::pair<float,float> TriangulatePointsDelaunay(const DepthData::ViewData& imag
  * 
  * @param[in] image       图像信息
  * @param[in] pointcloud  稀疏点云
- * @param[in] points      当前帧能看到的稀疏点云索引
+ * @param[in] points      当前帧和邻域帧能看到的稀疏点云索引（即共视点的索引）
  * @param[in] depthMap    待初始化的深度图
  * @param[in] normalMap   待初始化的法线图
  * @param[in] dMin        深度图最大值（由稀疏点投影的深度决定）
@@ -1258,6 +1297,7 @@ bool MVS::TriangulatePoints2DepthMap(
 			const Normal& normal(mesh.vertexNormals[i]);
 			for (const Point2i dx : {Point2i(0,0),Point2i(1,0),Point2i(0,1),Point2i(1,1)}) {
 				const Point2i ax(ix + dx);
+				// 判断点ax是否在深度图中
 				if (!depthMap.isInside(ax))
 					continue;
 				depthMap(ax) = z;
@@ -1266,7 +1306,7 @@ bool MVS::TriangulatePoints2DepthMap(
 		}
 	} else {
 		// rasterize triangles onto depthmap
-		struct RasterDepth : TRasterMeshBase<RasterDepth> {
+		struct RasterDepth : TRasterMeshBase<RasterDepth> {  // 用于计算每插入的一个新点的深度值，并且将其放到深度图上
 			typedef TRasterMeshBase<RasterDepth> Base;
 			using Base::camera;
 			using Base::depthMap;
@@ -1279,11 +1319,13 @@ bool MVS::TriangulatePoints2DepthMap(
 			Mesh::Face face;
 			RasterDepth(const Mesh::NormalArr& _vertexNormals, const Camera& _camera, DepthMap& _depthMap, NormalMap& _normalMap)
 				: Base(_camera, _depthMap), vertexNormals(_vertexNormals), normalMap(_normalMap) {}
-			inline void operator()(const ImageRef& pt, const Point3f& bary) {
+			inline void operator()(const ImageRef& pt, const Point3f& bary) {  // 栅格化过程中，每插入一个坐标点pt，就计算其深度
+				// 深度计算：(n/d)x = 1，x=depth*k*[u, v, 1]，则depth=(n/d)*k*[u, v, 1]
 				const Point3f pbary(PerspectiveCorrectBarycentricCoordinates(bary));
 				const Depth z(ComputeDepth(pbary));
 				ASSERT(z > Depth(0));  // due to numerical instability
 				depthMap(pt) = z;
+				// 利用三个点计算平面方程
 				// 三角形两个边叉乘得到的向量就是平面法向量（右手定则）
 				normalMap(pt) = normalized(
 					vertexNormals[face[0]] * pbary[0]+
@@ -1294,6 +1336,7 @@ bool MVS::TriangulatePoints2DepthMap(
 		};
 		RasterDepth rasterer = {mesh.vertexNormals, camera, depthMap, normalMap};
 		for (const Mesh::Face& face : mesh.faces) {
+			// 取出每一个face，以及其所对应的3个顶点的深度
 			rasterer.face = face;
 			rasterer.ptc[0].z = mesh.vertices[face[0]].z;
 			rasterer.ptc[1].z = mesh.vertices[face[1]].z;

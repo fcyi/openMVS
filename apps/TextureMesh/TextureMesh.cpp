@@ -94,12 +94,12 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	boost::program_options::options_description generic("Generic options");
 	generic.add_options()
 		("help,h", "produce this help message")
-		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")
-		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")
-		("export-type", boost::program_options::value<std::string>(&OPT::strExportType)->default_value(_T("ply")), "file type used to export the 3D scene (ply, obj, glb or gltf)")
+		("working-folder,w", boost::program_options::value<std::string>(&WORKING_FOLDER), "working directory (default current directory)")  // 数据路径
+		("config-file,c", boost::program_options::value<std::string>(&OPT::strConfigFileName)->default_value(APPNAME _T(".cfg")), "file name containing program options")  // 存储log信息
+		("export-type", boost::program_options::value<std::string>(&OPT::strExportType)->default_value(_T("ply")), "file type used to export the 3D scene (ply, obj, glb or gltf)")  // 产生的obj文件的保存格式。使用meshlab打开都是一样的观测效果，但是在进行纹理贴图时会有区别，使用的文件种数会不太一样（一个是三个文件，一个是两个文件）
 		("archive-type", boost::program_options::value(&OPT::nArchiveType)->default_value(ARCHIVE_MVS), "project archive type: -1-interface, 0-text, 1-binary, 2-compressed binary")
 		("process-priority", boost::program_options::value(&OPT::nProcessPriority)->default_value(-1), "process priority (below normal by default)")
-		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")
+		("max-threads", boost::program_options::value(&OPT::nMaxThreads)->default_value(0), "maximum number of threads (0 for using all available cores)")  // 多线程
 		#if TD_VERBOSE != TD_VERBOSE_OFF
 		("verbosity,v", boost::program_options::value(&g_nVerbosityLevel)->default_value(
 			#if TD_VERBOSE == TD_VERBOSE_DEBUG
@@ -117,21 +117,21 @@ bool Application::Initialize(size_t argc, LPCTSTR* argv)
 	// group of options allowed both on command line and in config file
 	boost::program_options::options_description config("Texture options");
 	config.add_options()
-		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")
+		("input-file,i", boost::program_options::value<std::string>(&OPT::strInputFileName), "input filename containing camera poses and image list")  // 输入
 		("mesh-file,m", boost::program_options::value<std::string>(&OPT::strMeshFileName), "mesh file name to texture (overwrite existing mesh)")
-		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")
-		("decimate", boost::program_options::value(&OPT::fDecimateMesh)->default_value(1.f), "decimation factor in range [0..1] to be applied to the input surface before refinement (0 - auto, 1 - disabled)")
-		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the input surface (0 - disabled)")
-		("resolution-level", boost::program_options::value(&OPT::nResolutionLevel)->default_value(0), "how many times to scale down the images before mesh refinement")
-		("min-resolution", boost::program_options::value(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")
+		("output-file,o", boost::program_options::value<std::string>(&OPT::strOutputFileName), "output filename for storing the mesh")                 // 输出
+		("decimate", boost::program_options::value(&OPT::fDecimateMesh)->default_value(1.f), "decimation factor in range [0..1] to be applied to the input surface before refinement (0 - auto, 1 - disabled)")  // 用于采样
+		("close-holes", boost::program_options::value(&OPT::nCloseHoles)->default_value(30), "try to close small holes in the input surface (0 - disabled)")  // 用于孔洞填充
+		("resolution-level", boost::program_options::value(&OPT::nResolutionLevel)->default_value(0), "how many times to scale down the images before mesh refinement")  // 用于网格优化的图像的分辨率的大小设置，一般情况下，在贴图过程中偏向于使用原始图像的分辨率，因为原图分辨率比较高，贴出来的效果比较好，模型显得更为精细
+		("min-resolution", boost::program_options::value(&OPT::nMinResolution)->default_value(640), "do not scale images lower than this resolution")  // OpenMVS过程中图像分辨率的最小值
 		("outlier-threshold", boost::program_options::value(&OPT::fOutlierThreshold)->default_value(6e-2f), "threshold used to find and remove outlier face textures (0 - disabled)")
 		("cost-smoothness-ratio", boost::program_options::value(&OPT::fRatioDataSmoothness)->default_value(0.1f), "ratio used to adjust the preference for more compact patches (1 - best quality/worst compactness, ~0 - worst quality/best compactness)")
 		("virtual-face-images", boost::program_options::value(&OPT::minCommonCameras)->default_value(0), "generate texture patches using virtual faces composed of coplanar triangles sharing at least this number of views (0 - disabled, 3 - good value)")
-		("global-seam-leveling", boost::program_options::value(&OPT::bGlobalSeamLeveling)->default_value(true), "generate uniform texture patches using global seam leveling")
-		("local-seam-leveling", boost::program_options::value(&OPT::bLocalSeamLeveling)->default_value(true), "generate uniform texture patch borders using local seam leveling")
-		("texture-size-multiple", boost::program_options::value(&OPT::nTextureSizeMultiple)->default_value(0), "texture size should be a multiple of this value (0 - power of two)")
-		("patch-packing-heuristic", boost::program_options::value(&OPT::nRectPackingHeuristic)->default_value(3), "specify the heuristic used when deciding where to place a new patch (0 - best fit, 3 - good speed, 100 - best speed)")
-		("empty-color", boost::program_options::value(&OPT::nColEmpty)->default_value(0x00FF7F27), "color used for faces not covered by any image")
+		("global-seam-leveling", boost::program_options::value(&OPT::bGlobalSeamLeveling)->default_value(true), "generate uniform texture patches using global seam leveling")     // 全局颜色校正的开关
+		("local-seam-leveling", boost::program_options::value(&OPT::bLocalSeamLeveling)->default_value(true), "generate uniform texture patch borders using local seam leveling")  // 局部颜色校正的开关
+		("texture-size-multiple", boost::program_options::value(&OPT::nTextureSizeMultiple)->default_value(0), "texture size should be a multiple of this value (0 - power of two)")  // 生成纹理图块的参数，一般使用默认即可
+		("patch-packing-heuristic", boost::program_options::value(&OPT::nRectPackingHeuristic)->default_value(3), "specify the heuristic used when deciding where to place a new patch (0 - best fit, 3 - good speed, 100 - best speed)")  // 生成纹理图块的参数，一般使用默认即可
+		("empty-color", boost::program_options::value(&OPT::nColEmpty)->default_value(0x00FF7F27), "color used for faces not covered by any image")  // 纹理图的背景色，此处默认为橙色
 		("sharpness-weight", boost::program_options::value(&OPT::fSharpnessWeight)->default_value(0.5f), "amount of sharpness to be applied on the texture (0 - disabled)")
 		("orthographic-image-resolution", boost::program_options::value(&OPT::nOrthoMapResolution)->default_value(0), "orthographic image resolution to be generated from the textured mesh - the mesh is expected to be already geo-referenced or at least properly oriented (0 - disabled)")
 		("ignore-mask-label", boost::program_options::value(&OPT::nIgnoreMaskLabel)->default_value(-1), "label value to ignore in the image mask, stored in the MVS scene or next to each image with '.mask.png' extension (-1 - auto estimate mask for lens distortion, -2 - disabled)")
@@ -270,7 +270,7 @@ int main(int argc, LPCTSTR* argv)
 		return EXIT_FAILURE;
 
 	Scene scene(OPT::nMaxThreads);
-	// load and texture the mesh
+	// load and texture the mesh，即加载mesh、图像和位姿
 	const Scene::SCENE_TYPE sceneType(scene.Load(MAKE_PATH_SAFE(OPT::strInputFileName)));
 	if (sceneType == Scene::SCENE_NA)
 		return EXIT_FAILURE;
@@ -290,6 +290,7 @@ int main(int argc, LPCTSTR* argv)
 
 	{
 	// decimate to the desired resolution
+	// 通过.Clean()方法对mesh进行采样、补洞、狭长的三角面片等后处理操作
 	if (OPT::fDecimateMesh < 1.f) {
 		ASSERT(OPT::fDecimateMesh > 0.f);
 		scene.mesh.Clean(OPT::fDecimateMesh, 0.f, false, OPT::nCloseHoles, 0u, 0.f, false);
@@ -305,6 +306,7 @@ int main(int argc, LPCTSTR* argv)
 		views = ParseViewsFile(MAKE_PATH_SAFE(OPT::strViewsFileName), scene);
 
 	// compute mesh texture
+	// 进行纹理贴图，获取最终的重建结果，即纹理坐标faceTexcoords、纹理图texturesDiffuse、mesh顶点vertices、mesh面片faces
 	TD_TIMER_START();
 	if (!scene.TextureMesh(OPT::nResolutionLevel, OPT::nMinResolution, OPT::minCommonCameras, OPT::fOutlierThreshold, OPT::fRatioDataSmoothness,
 						   OPT::bGlobalSeamLeveling, OPT::bLocalSeamLeveling, OPT::nTextureSizeMultiple, OPT::nRectPackingHeuristic, Pixel8U(OPT::nColEmpty),

@@ -55,7 +55,8 @@ namespace MVS {
 // (see: R. Hartley, "Multiple View Geometry," 2004, pp. 156.);
 // the projection in image coordinates uses the convention that the center of a pixel is defined at integer coordinates,
 // i.e. the center is at (0, 0) and the top left corner is at (-0.5, -0.5)
-// !!! 注意 C指点是相机中心在世界坐标系中的坐标，而非我们常用的平移向量。我们常用的坐标转换（世界到相机）：p_c=R*p_w+t
+// !!! 注意 C指点是相机中心在世界坐标系中的坐标（相机中心就是相机原点，在相应的相机坐标系下为(0,0,0)，在世界坐标系下为-R_invert*t），而非我们常用的平移向量。
+// !!! 我们常用的坐标转换（世界到相机）：p_c=R*p_w+t，先进行旋转操作，再进行平移操作，注意这个操作顺序，具体参看一下第5讲的课件。
 // !!! t是平移向量。相机中心p_c=[0,0,0],根据上述公式推出其在世界坐标系中的坐标p_w=-R_invert*t。这个值就是我们的C
 // !!! 将C=-R_invert*t代入P = KR[I|-C]，p_c=R(p_w-(-R_invert*t))=Rp_w+t  p=k*p_c
 class MVS_API CameraIntern
@@ -115,7 +116,7 @@ public:
 	}
 
 	// returns the scale used to normalize the intrinsics
-	// 归一化相机内参
+	// 归一化相机内参，也就是获取相机所采取的图像的最长边
 	static inline float GetNormalizationScale(uint32_t width, uint32_t height) {
 		ASSERT(width>0 && height>0);
 		return float(MAXF(width, height));
@@ -290,6 +291,7 @@ public:
 	void DecomposeP(); // decompose P in K, R and C
 	void Transform(const Matrix3x3& R, const Point3& t, const REAL& s); // transform camera by the given similarity transform
 
+	// 用于深度图计算
 	REAL PointDepth(const Point3& X) const; // computes the depth of the given 3D point seen from this camera
 	bool IsInFront(const Point3& X) const; // test if the given 3D point is in front of the camera
 	REAL DistanceSq(const Point3& X) const; // compute the distance from the camera to the given 3D point
@@ -452,10 +454,11 @@ public:
 		#if 0
 		// 跟论文中提到的计算方式一致，就是在当前点基础上移动一个距离，判断下在像素上移动多少个像素（空间中实际距离对于像素距离）
 		const TYPE fSphereRadius(1);
-		const TPoint3<TYPE> camX(TransformPointW2C(X));
+		const TPoint3<TYPE> camX(TransformPointW2C(X));  // 空间共视点在相机坐标系下的坐标
+		// 空间共视点在x轴上平移一个量后投影到图像上会得到对应的投影点坐标，将其与未进行平移的空间点在图像上的投影点坐标进行作差
 		return norm(TransformPointC2I(TPoint3<TYPE>(camX.x+fSphereRadius,camX.y,camX.z))-TransformPointC2I(camX));
 		#else
-		// 简化计算直接用类似视差dis=fb/depth表示（近大远小）
+		// !!! 值得学习。简化计算直接用类似视差dis=fb/depth表示（近大远小），即借用了深度图与视差图之间的关系用视差来近似分辨率（因为越近，场景内容的分辨率也越高），并且此处将基线视为常量
 		return static_cast<TYPE>(GetFocalLength() / PointDepth(X));
 		#endif
 	}

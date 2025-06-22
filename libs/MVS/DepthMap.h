@@ -154,11 +154,11 @@ template <int nTexels>
 struct WeightedPatchFix {
 	struct Pixel {
 		float weight;
-		float tempWeight;
+		float tempWeight;    // weight*（image0.image(x0.y, x0.x)-normSq0_temp/sumWeights)
 	};
 	Pixel weights[nTexels];  // 存放的时patch内每个像素的权重值
 	float sumWeights;        // 权重的和
-	float normSq0;           // Σweight*（image0.image(x0.y+i, x0.x+j)-normSq0_temp/sumWeights)^2
+	float normSq0;           // Σweight*（image0.image(x0.y+i, x0.x+j)-normSq0_temp/sumWeights)^2，image0.image(x0.y+i, x0.x+j)表示Patch内的像素灰度值，normSq0_temp表示Patch内的平均像素灰度值
 	WeightedPatchFix() : normSq0(0) {}
 };
 
@@ -167,10 +167,10 @@ struct MVS_API DepthData {
 	// 记录image0与image1的homography部分计算，Hij=Kj*(Rj*inv(Ri)+(Rj*(Ci-Cj)*ni)/(ni*Xi))*inv(Ki)
 	// Hl=Kj*Rj*inv(Ri), Hm=Kj*Rj*(Ci-Cj),Hr=inv(Ki)
 	struct ViewData {
-		float scale; // image缩放尺度是在selectneighborviews函数中计算的，将target缩放到reference图像相同尺寸。image scale relative to the reference image
+		float scale; // image缩放尺度是在selectneighborviews函数中计算的，将target缩放到reference图像相同尺寸，使图像中的内容尺度一致。image scale relative to the reference image
 		Camera camera; // 当前帧的相机内外参数，camera matrix corresponding to this image
 		Image32F image; // float格式图像（归一化到0-1），image float intensities
-		Image* pImageData; // image数据，image data
+		Image* pImageData; // image数据（用于计算深度图的图像的原始数据），image data
 
 		Matrix3x3 Hl; //
 		Vec3 Hm;      // constants during per-pixel loops
@@ -232,12 +232,12 @@ struct MVS_API DepthData {
 	ViewDataArr images;     // 用来计算当前帧depth的所有图像序列（第一帧是reference图像，接下来的是neighbor 帧），array of images used to compute this depth-map (reference image is the first)
 	ViewScoreArr neighbors; // 当前帧的所有邻域，按重要性（score）从高到底排列。array of all images seeing this depth-map (ordered by decreasing importance)
 	IndexArr points;        // 当前帧能看到的所有稀疏特征点的id，indices of the sparse 3D points seen by the this image
-	BitMatrix mask;         // 标记被忽略的像素，mark pixels to be ignored
+	BitMatrix mask;         // 标记被忽略（也就是不需要计算）的像素，mark pixels to be ignored
 	DepthMap depthMap;      // 当前深度图，depth-map
-	NormalMap normalMap;    // 相机坐标系下法线，normal-map in camera space
+	NormalMap normalMap;    // 相机坐标系下法向量，normal-map in camera space
 	ConfidenceMap confMap;  // 当前深度图的置信度，confidence-map
 	ViewsMap viewsMap;      // view-IDs map (indexing images vector starting after first view)
-	float dMin, dMax;       // 根据当前帧能看到的稀疏点计算的深度范围，global depth range for this image
+	float dMin, dMax;       // 根据当前帧能看到的稀疏点计算的深度范围（根据稀疏特征点计算得到），global depth range for this image
 	unsigned references;    // 该参数未被使用可忽略，how many times this depth-map is referenced (on 0 can be safely unloaded)
 	CriticalSection cs;     // 该参数未被使用可忽略，used to count references
 
@@ -315,9 +315,9 @@ struct MVS_API DepthEstimator {
 
 	typedef Eigen::Matrix<float,nTexels,1> TexelVec;
 	struct NeighborData {
-		ImageRef x;
-		Depth depth;
-		Normal normal;
+		ImageRef x;     // 邻域数据对应的坐标
+		Depth depth;    // 邻域数据对应的深度值
+		Normal normal;  // 领域数据对应的法向量
 	};
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	struct NeighborEstimate {
@@ -342,11 +342,11 @@ struct MVS_API DepthEstimator {
 
 	SEACAVE::Random rnd;
 
-	volatile Thread::safe_t& idxPixel; // 当前被处理的像素ID，current image index to be processed
+	volatile Thread::safe_t& idxPixel; // 当前被处理的像素ID（可用于多线程控制），current image index to be processed
 	#if DENSE_SMOOTHNESS == DENSE_SMOOTHNESS_NA
 	CLISTDEF0IDX(NeighborData,IIndex) neighbors; // neighbor pixels coordinates to be processed
 	#else
-	CLISTDEF0IDX(ImageRef,IIndex) neighbors; // neighbor pixels coordinates to be processed
+	CLISTDEF0IDX(ImageRef,IIndex) neighbors; // 邻域像素坐标，neighbor pixels coordinates to be processed
 	#endif
 	#if DENSE_SMOOTHNESS != DENSE_SMOOTHNESS_NA
 	CLISTDEF0IDX(NeighborEstimate,IIndex) neighborsClose; // 接近邻域的像素，被用来做平滑，close neighbor pixel depths to be used for smoothing
@@ -431,7 +431,7 @@ struct MVS_API DepthEstimator {
 
 	#if DENSE_NCC == DENSE_NCC_WEIGHTED
 	/**
-	 * @brief 计算颜色空间和几何空间的权重
+	 * @brief 计算颜色空间和几何空间（像素距离）的权重（用于带权重的NCC计算），空间距离越小，颜色外观越相似，权重值也就越大
 	 * 
 	 * @param[in] x      相对中心像素(计算深度)x0的偏移
 	 * @param[in] center x0的灰度值
@@ -450,6 +450,8 @@ struct MVS_API DepthEstimator {
 	}
 	#endif
 
+	// 将点投影到世界坐标系下，再投影到参考帧上，与SGM不同，由于SGM对图像进行极线校正，因此当前帧上的像素点在相邻参考帧上的匹配点的空间位置通过水平视差即可确定
+	// 在PatchMatch里由于没有极线矫正，因此通过投影矩阵来获取当前帧的像素点在相邻参考帧上的像素位置
 	inline Matrix3x3f ComputeHomographyMatrix(const DepthData::ViewData& img, Depth depth, const Normal& normal) const {
 		#if 0
 		// compute homography matrix

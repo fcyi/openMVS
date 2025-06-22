@@ -57,7 +57,7 @@ public:
 	~DepthMapsData();
 
 	/**
-	 * @brief 给每帧图像全局选一个最优的target image用来深度计算。
+	 * @brief 给每帧图像全局选一个最优的邻域帧（target image）用来深度计算。
 	 * 
 	 * @param[in] images 		记录用来计算depth的有效帧id
 	 * @param[in] imagesMap 	记录计算depth的帧在全局中id与depth计算数据结构中新id对应关系
@@ -67,7 +67,7 @@ public:
 	 */
 	bool SelectViews(IIndexArr& images, IIndexArr& imagesMap, IIndexArr& neighborsMap);
 	/**
-	 * @brief 给每帧选择邻域views，
+	 * @brief 给每帧选择邻域views（这种选择方式比较粗糙）
 	 * 
 	 * @param[in] depthData 单帧深度计算相关数据
 	 * @return true 
@@ -75,7 +75,7 @@ public:
 	 */
 	bool SelectViews(DepthData& depthData);
 	/**
-	 * @brief 初始化计算深度图的图像
+	 * @brief 初始化计算深度图的图像，主要是进行resize等基本得图像处理操作
 	 * 
 	 * @param[in] depthData    深度图数据
 	 * @param[in] idxNeighbor  邻域ID
@@ -85,7 +85,7 @@ public:
 	 */
 	bool InitViews(DepthData& depthData, IIndex idxNeighbor, IIndex numNeighbors, bool loadImages, int loadDepthMaps);
 	/**
-	 * @brief 深度图初始化，主要是利用特征点进行初始化
+	 * @brief 深度图初始化，主要是利用特征点进行初始化，也就是对输入的pointCloud这个稀疏点云做一个三角网格划分，再进行栅格化，再进行插值从而得到一个初始的深度图
 	 * 
 	 * @param[in] depthData 单帧深度计算相关数据
 	 * @return true 
@@ -101,7 +101,7 @@ public:
 	 */
 	bool EstimateDepthMap(IIndex idxImage, int nGeometricIter);
 
-	// 滤波
+	// 滤波，滤除一些小的连通域，或对一些小孔洞进行填充
 	bool RemoveSmallSegments(DepthData& depthData);
 	bool GapInterpolation(DepthData& depthData);
 	/**
@@ -135,9 +135,9 @@ protected:
 public:
 	Scene& scene;
 
-	DepthDataArr arrDepthData;  // 存放的是每帧depth（见数据结构DepthData)和对应的Id。
+	DepthDataArr arrDepthData;  // 存放的是每帧depth（见数据结构DepthData)和对应的Id，所有的计算结果都是存储在这个变量里面
 
-	// used internally to estimate the depth-maps
+	// used internally to estimate the depth-maps，下面的变量都是用于构建深度图，在深度图计算时，图像上像素的考虑顺序并不是逐行、逐列，而是以Z字路径的形式考虑、遍历像素，主要是在PatchMatch中的传播过程会用到
 	Image8U::Size prevDepthMapSize;      // 记录上一个重建的depth的大小，remember the size of the last estimated depth-map
 	Image8U::Size prevDepthMapSizeTrg;   // 记录上一个重建depth的target图像大小，... same for target image
 	DepthEstimator::MapRefArr coords;    // 之字形搜索与图像坐标的映射，refer图像，map pixel index to zigzag matrix coordinates
@@ -151,17 +151,17 @@ public:
 /*----------------------------------------------------------------*/
 
 struct MVS_API DenseDepthMapData {
-	Scene& scene;
-	IIndexArr images;                  // 图像信息
-	IIndexArr neighborsMap;            // 记录每帧对应的参考帧
-	DepthMapsData depthMaps;
-	volatile Thread::safe_t idxImage;  // 当前计算的帧id
-	SEACAVE::EventQueue events;        // 内部深度计算事件队列，internal events queue (processed by the working threads)
-	Semaphore sem;
-	CAutoPtr<Util::Progress> progress;
+	Scene& scene;                      // 所有的输入数据
+	IIndexArr images;                  // 图像信息（用来计算深度图的图像ID）
+	IIndexArr neighborsMap;            // 记录每帧对应的参考帧的ID
+	DepthMapsData depthMaps;           // 所有的深度图
+	volatile Thread::safe_t idxImage;  // 与多线程相关，当前计算的帧id
+	SEACAVE::EventQueue events;        // 与多线程相关，内部深度计算事件队列，internal events queue (processed by the working threads)
+	Semaphore sem;                     // 与多线程相关
+	CAutoPtr<Util::Progress> progress; // 与多线程相关
 	int nEstimationGeometricIter;
 	int nFusionMode;                   // 深度图计算方式控制<0 用SGM/tSGM >=0 用patchMatch
-	STEREO::SemiGlobalMatcher sgm;     // sgm算法
+	STEREO::SemiGlobalMatcher sgm;     // sgm算法的定义
 	// 初始化函数
 	DenseDepthMapData(Scene& _scene, int _nFusionMode=0);
 	// 析构函数

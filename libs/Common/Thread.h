@@ -175,6 +175,7 @@ public:
 	static inline int32_t safeExchange(volatile int32_t& target, int32_t value) { return __sync_val_compare_and_swap(&target, target, value); }
 	static inline int32_t safeCompareExchange(volatile int32_t& target, int32_t comp, int32_t value) { return __sync_val_compare_and_swap(&target, comp, value); }
 
+	// 在多线程中，每次被调用都会对v加1
 	static inline int64_t safeInc(volatile int64_t& v) { return __sync_add_and_fetch(&v, 1); }
 	static inline int64_t safeDec(volatile int64_t& v) { return __sync_sub_and_fetch(&v, 1); }
 	static inline int64_t safeExchange(volatile int64_t& target, int64_t value) { return __sync_val_compare_and_swap(&target, target, value); }

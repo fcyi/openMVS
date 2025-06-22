@@ -73,6 +73,7 @@ public:
 
 	inline bool IsValid() const { return poseID != NO_ID; }
 	inline bool HasResolution() const { return width > 0 && height > 0; }
+	// 取图像的长和宽
 	inline Image8U::Size GetSize() const { return Image8U::Size(width, height); }
 
 	// read image data from the file
